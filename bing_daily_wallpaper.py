@@ -17,6 +17,7 @@ from tkinter import ttk
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
 SAVE_DIR = Path(os.environ["USERPROFILE"]) / "Pictures" / "Bing"
 APP_DIR = Path(os.environ["ProgramFiles"]) / "BingWallpaper"
+VERSION = "1.0.0"
 
 # Setup Logging
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,6 +40,7 @@ class BingTrayApp:
         
         # Ensure save directory exists
         SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        log_msg(f"Initializing Bing Wallpaper App v{VERSION}")
 
     def get_bing_image_info(self):
         try:
@@ -151,7 +153,7 @@ class BingTrayApp:
 
     def create_root(self):
         self.root = tk.Tk()
-        self.root.title("Bing Wallpaper Preview")
+        self.root.title(f"Bing Wallpaper Preview v{VERSION}")
         self.root.geometry("800x600")
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
         

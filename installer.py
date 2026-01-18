@@ -12,11 +12,12 @@ import threading
 # Configuration
 APP_NAME = "BingWallpaper"
 INSTALL_DIR = Path(os.environ["ProgramFiles"]) / APP_NAME
+VERSION = "1.0.0"
 
 class BingWallpaperInstaller(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Bing Wallpaper Installer")
+        self.title(f"Bing Wallpaper Installer v{VERSION}")
         self.geometry("400x350")
         self.resizable(False, False)
         
@@ -77,7 +78,7 @@ class BingWallpaperInstaller(tk.Tk):
         header_frame = ttk.Frame(self, padding="10")
         header_frame.pack(fill=tk.X)
         
-        title_label = ttk.Label(header_frame, text="Bing Daily Wallpaper", font=("Segoe UI", 16, "bold"))
+        title_label = ttk.Label(header_frame, text=f"Bing Daily Wallpaper v{VERSION}", font=("Segoe UI", 16, "bold"))
         title_label.pack()
         
         status_text = "Status: Installed" if self.is_installed else "Status: Not Installed"
