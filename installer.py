@@ -11,8 +11,8 @@ import threading
 
 # Configuration
 APP_NAME = "BingWallpaper"
-INSTALL_DIR = Path(os.environ["ProgramFiles"]) / APP_NAME
-VERSION = "1.0.0"
+INSTALL_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / APP_NAME
+VERSION = "1.1.0"
 
 class BingWallpaperInstaller(tk.Tk):
     def __init__(self):
@@ -30,12 +30,6 @@ class BingWallpaperInstaller(tk.Tk):
         self.is_installed = self.check_installed()
         
         self.create_widgets()
-        
-        if not self.is_admin():
-            if messagebox.askyesno("Admin Rights Required", "This installer requires Administrator privileges.\nDo you want to restart as Administrator?"):
-                self.elevate()
-            self.destroy()
-            return
 
     def is_admin(self):
         try:

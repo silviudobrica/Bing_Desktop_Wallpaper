@@ -16,8 +16,8 @@ from tkinter import ttk
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
 SAVE_DIR = Path(os.environ["USERPROFILE"]) / "Pictures" / "Bing"
-APP_DIR = Path(os.environ["ProgramFiles"]) / "BingWallpaper"
-VERSION = "1.0.0"
+APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "BingWallpaper"
+VERSION = "1.1.0"
 
 # Setup Logging
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
