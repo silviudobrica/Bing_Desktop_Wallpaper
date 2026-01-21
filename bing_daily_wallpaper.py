@@ -6,18 +6,32 @@ import datetime
 import time
 import threading
 import logging
+import json
 from pathlib import Path
 from PIL import Image, ImageTk
 import pystray
 from pystray import MenuItem as item
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, simpledialog
 
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
 SAVE_DIR = Path(os.environ["USERPROFILE"]) / "Pictures" / "Bing"
 APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "BingWallpaper"
+CONFIG_FILE = APP_DIR / "config.json"
 VERSION = "1.1.0"
+
+# Interval presets in minutes
+INTERVAL_PRESETS = {
+    "15 Minutes": 15,
+    "30 Minutes": 30,
+    "1 Hour": 60,
+    "4 Hours": 240,
+    "6 Hours": 360,
+    "12 Hours": 720,
+    "24 Hours": 1440,
+    "Disabled": 0
+}
 
 # Setup Logging
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -34,17 +48,101 @@ class BingTrayApp:
         self.icon = None
         self.root = None
         self.last_check = 0
-        self.check_interval = 15 * 60  # 15 minutes
         self.current_image_path = None
         self.running = True
         
-        # Ensure save directory exists
+        # Ensure directories exist
         SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Load config and set check interval
+        config = self.load_config()
+        interval_minutes = config.get("check_interval_minutes", 720)  # Default 12 hours
+        self.check_interval = interval_minutes * 60 if interval_minutes > 0 else 0
+        
         log_msg(f"Initializing Bing Wallpaper App v{VERSION}")
+        log_msg(f"Check interval: {interval_minutes} minutes")
+
+    def load_config(self):
+        """Load configuration from JSON file"""
+        try:
+            if CONFIG_FILE.exists():
+                with open(CONFIG_FILE, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            log_msg(f"Error loading config: {e}")
+        return {}
+
+    def save_config(self, config):
+        """Save configuration to JSON file"""
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+            log_msg(f"Config saved: {config}")
+        except Exception as e:
+            log_msg(f"Error saving config: {e}")
+
+    def set_interval(self, minutes, label):
+        """Set the check interval and save to config"""
+        try:
+            log_msg(f"Setting interval to: {label} ({minutes} minutes)")
+            config = self.load_config()
+            config["check_interval_minutes"] = minutes
+            self.save_config(config)
+            
+            # Update runtime interval
+            self.check_interval = minutes * 60 if minutes > 0 else 0
+            self.last_check = 0  # Reset to trigger check soon
+            
+            # Rebuild menu to update checkmarks
+            if self.icon:
+                self.icon.menu = self.create_menu()
+        except Exception as e:
+            log_msg(f"Error setting interval: {e}")
+
+    def show_custom_interval_dialog(self):
+        """Show dialog to input custom interval in minutes"""
+        if not self.root:
+            self.create_root()
+        
+        # Temporarily show root to make dialog visible
+        was_hidden = not self.root.winfo_viewable()
+        if was_hidden:
+            self.root.deiconify()
+            self.root.update()  # Force window to appear
+        
+        result = simpledialog.askinteger(
+            "Custom Interval",
+            "Enter check interval in minutes:",
+            parent=self.root,
+            minvalue=1,
+            maxvalue=10080  # 1 week max
+        )
+        
+        # Hide root again if it was hidden
+        if was_hidden:
+            self.root.withdraw()
+        
+        if result:
+            self.set_interval(result, f"Custom ({result} min)")
+
+    def get_proxy_dict(self):
+        """Get proxy configuration for requests library"""
+        config = self.load_config()
+        proxy_url = config.get("proxy_url", "").strip()
+        proxy_port = config.get("proxy_port", "").strip()
+        
+        if proxy_url and proxy_port:
+            proxy = f"http://{proxy_url}:{proxy_port}"
+            log_msg(f"Using proxy: {proxy}")
+            return {"http": proxy, "https": proxy}
+        return None
+
+
 
     def get_bing_image_info(self):
         try:
-            response = requests.get(BING_API, timeout=10)
+            response = requests.get(BING_API, timeout=10, proxies=self.get_proxy_dict())
             response.raise_for_status()
             data = response.json()
             
@@ -71,7 +169,7 @@ class BingTrayApp:
                 return file_path
                 
             log_msg(f"Downloading new image to {file_path}...")
-            response = requests.get(url, timeout=20)
+            response = requests.get(url, timeout=20, proxies=self.get_proxy_dict())
             response.raise_for_status()
             
             with open(file_path, "wb") as f:
@@ -130,7 +228,8 @@ class BingTrayApp:
 
     def background_loop(self):
         while self.running:
-            if time.time() - self.last_check > self.check_interval:
+            # Skip automatic checks if interval is disabled (0)
+            if self.check_interval > 0 and time.time() - self.last_check > self.check_interval:
                 self.check_and_update(force=False)
             time.sleep(1)
 
@@ -271,6 +370,54 @@ class BingTrayApp:
         if self.root:
             self.root.quit()
 
+    def create_menu(self):
+        """Create the tray icon menu with interval submenu"""
+        # Get current interval in minutes
+        config = self.load_config()
+        current_interval = config.get("check_interval_minutes", 720)
+        
+        # Helper function to create interval setter
+        def make_interval_setter(minutes, label):
+            def setter(icon, item):
+                self.set_interval(minutes, label)
+            return setter
+        
+        # Create interval menu items
+        interval_items = []
+        for label, minutes in INTERVAL_PRESETS.items():
+            prefix = "● " if current_interval == minutes else "○ "
+            interval_items.append(
+                item(prefix + label, make_interval_setter(minutes, label))
+            )
+        
+        # Add separator and custom option
+        interval_items.append(item('─────────', None, enabled=False))
+        
+        # Check if current interval is a custom value
+        is_custom = current_interval not in INTERVAL_PRESETS.values()
+        custom_label = f"Custom ({current_interval} min)" if is_custom else "Custom..."
+        prefix = "● " if is_custom else "○ "
+        
+        def custom_setter(icon, item):
+            # Must run Tkinter dialog on main thread
+            if self.root:
+                self.root.after(0, self.show_custom_interval_dialog)
+        
+        interval_items.append(
+            item(prefix + custom_label, custom_setter)
+        )
+        
+        # Build main menu
+        return pystray.Menu(
+            item('Preview / Gallery', self.on_open_preview, default=True),
+            item('Check for Updates', self.on_update_now),
+            item('─────────', None, enabled=False),
+            item('Check Interval', pystray.Menu(*interval_items)),
+            item('─────────', None, enabled=False),
+            item('Exit', self.on_exit)
+        )
+
+
     def run(self):
         log_msg("Starting Bing Wallpaper App...")
         
@@ -282,12 +429,7 @@ class BingTrayApp:
         
         # Pystray Setup
         default_img = Image.new('RGB', (64, 64), color = (73, 109, 137))
-        menu = pystray.Menu(
-            item('Preview / Gallery', self.on_open_preview, default=True),
-            item('Check for Updates', self.on_update_now),
-            item('Exit', self.on_exit)
-        )
-        self.icon = pystray.Icon("BingWallpaper", default_img, "Bing Wallpaper", menu)
+        self.icon = pystray.Icon("BingWallpaper", default_img, "Bing Wallpaper", self.create_menu())
         
         # Run pystray in a separate thread because it blocks
         threading.Thread(target=self.icon.run, daemon=True).start()

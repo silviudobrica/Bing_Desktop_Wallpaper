@@ -5,6 +5,8 @@ import shutil
 import ctypes
 import tkinter as tk
 import winreg
+import re
+import json
 from tkinter import messagebox, ttk
 from pathlib import Path
 import threading
@@ -18,7 +20,7 @@ class BingWallpaperInstaller(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"Bing Wallpaper Installer v{VERSION}")
-        self.geometry("400x350")
+        self.geometry("400x500")
         self.resizable(False, False)
         
         # Center window
@@ -60,6 +62,43 @@ class BingWallpaperInstaller(tk.Tk):
             base_path = os.path.abspath(".")
         return os.path.join(base_path, relative_path)
 
+    def detect_system_proxy(self):
+        """Detect system proxy from environment or Windows settings"""
+        # Try environment variables first
+        proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
+        if proxy:
+            # Parse http://proxy.example.com:80
+            match = re.search(r'://([^:]+):(\d+)', proxy)
+            if match:
+                return match.group(1), match.group(2)
+            # Try format without protocol: proxy.example.com:80
+            match = re.search(r'([^:]+):(\d+)', proxy)
+            if match:
+                return match.group(1), match.group(2)
+        
+        # Try Windows Internet Settings (current user)
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Internet Settings')
+            proxy_enable, _ = winreg.QueryValueEx(key, 'ProxyEnable')
+            if proxy_enable:
+                proxy_server, _ = winreg.QueryValueEx(key, 'ProxyServer')
+                # Parse proxy.example.com:80
+                if ':' in proxy_server:
+                    # Handle multiple protocols (http=abc:80;https=xyz:80)
+                    if '=' in proxy_server:
+                        for part in proxy_server.split(';'):
+                            if part.startswith('http=') or part.startswith('https='):
+                                _, val = part.split('=', 1)
+                                if ':' in val:
+                                    return val.split(':', 1)
+                    else:
+                        return proxy_server.split(':', 1)
+        except Exception:
+            pass
+        
+        return "", ""
+
     def logger(self, message):
         self.log_text.config(state=tk.NORMAL)
         self.log_text.insert(tk.END, message + "\n")
@@ -95,6 +134,25 @@ class BingWallpaperInstaller(tk.Tk):
             
             ttk.Separator(content_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
             
+            # Proxy Settings
+            ttk.Label(content_frame, text="Proxy Settings (Optional):").pack(anchor=tk.W)
+            
+            proxy_frame = ttk.Frame(content_frame)
+            proxy_frame.pack(fill=tk.X, pady=5)
+            
+            ttk.Label(proxy_frame, text="URL:").grid(row=0, column=0, padx=(0, 5), sticky=tk.W)
+            self.proxy_url_var = tk.StringVar()
+            ttk.Entry(proxy_frame, textvariable=self.proxy_url_var, width=25).grid(row=0, column=1, padx=(0, 10))
+            
+            ttk.Label(proxy_frame, text="Port:").grid(row=0, column=2, padx=(0, 5), sticky=tk.W)
+            self.proxy_port_var = tk.StringVar()
+            ttk.Entry(proxy_frame, textvariable=self.proxy_port_var, width=6).grid(row=0, column=3)
+            
+            detect_btn = ttk.Button(content_frame, text="Detect System Proxy", command=self.on_detect_proxy)
+            detect_btn.pack(pady=(0, 10), fill=tk.X)
+            
+            ttk.Separator(content_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+            
             self.action_btn = ttk.Button(content_frame, text="Install", command=self.start_install_thread)
             self.action_btn.pack(pady=5, fill=tk.X)
             
@@ -113,6 +171,15 @@ class BingWallpaperInstaller(tk.Tk):
         ttk.Label(content_frame, text="Log:").pack(anchor=tk.W, pady=(10, 0))
         self.log_text = tk.Text(content_frame, height=8, width=40, state=tk.DISABLED, font=("Consolas", 8))
         self.log_text.pack(fill=tk.BOTH, expand=True)
+
+    def on_detect_proxy(self):
+        url, port = self.detect_system_proxy()
+        if url:
+            self.proxy_url_var.set(url)
+            self.proxy_port_var.set(port)
+            self.logger(f"Detected proxy: {url}:{port}")
+        else:
+            self.logger("No system proxy detected.")
 
     def start_install_thread(self):
         self.action_btn.config(state=tk.DISABLED)
@@ -157,23 +224,68 @@ class BingWallpaperInstaller(tk.Tk):
 
             self.logger(f"Using Python: {python_cmd}")
             
-            python_w = python_cmd.replace("python.exe", "pythonw.exe")
-            if not os.path.exists(python_w):
+            # Try to find pythonw.exe
+            python_w = None
+            
+            # 1. Look next to current python executable
+            if sys.executable:
+                p = Path(sys.executable).parent / "pythonw.exe"
+                if p.exists():
+                    python_w = str(p)
+            
+            # 2. Look next to detected python_cmd
+            if not python_w and python_cmd:
+                p = Path(python_cmd).parent / "pythonw.exe"
+                if p.exists():
+                    python_w = str(p)
+            
+            # 3. Look in PATH
+            if not python_w:
+                python_w = shutil.which("pythonw")
+                
+            # Fallback
+            if not python_w:
+                self.logger("Warning: pythonw.exe not found. Console window may appear.")
                 python_w = python_cmd
+            else:
+                self.logger(f"Using PythonW: {python_w}")
 
             # 2. Install Requirements
             self.logger("Installing dependencies...")
             req_file = self.get_resource_path("requirements.txt")
             if os.path.exists(req_file):
                 try:
-                    subprocess.check_call([python_cmd, "-m", "pip", "install", "-r", req_file], creationflags=subprocess.CREATE_NO_WINDOW)
-                except:
-                    pass
-            
+                    proxy_url = self.proxy_url_var.get().strip()
+                    proxy_port = self.proxy_port_var.get().strip()
+                    
+                    cmd = [python_cmd, "-m", "pip", "install"]
+                    if proxy_url and proxy_port:
+                        proxy = f"http://{proxy_url}:{proxy_port}"
+                        self.logger(f"Using proxy for pip: {proxy}")
+                        cmd.extend(["--proxy", proxy])
+                        
+                    cmd.extend(["-r", req_file])
+                    subprocess.check_call(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
+                except Exception as e:
+                    self.logger(f"Pip install error (non-fatal): {e}")
+
             # 3. Copy Files
             self.logger(f"Creating directory {INSTALL_DIR}...")
             INSTALL_DIR.mkdir(parents=True, exist_ok=True)
             
+            # Save proxy settings (and default interval)
+            try:
+                config_file = INSTALL_DIR / "config.json"
+                config = {
+                    "check_interval_minutes": 720,
+                    "proxy_url": self.proxy_url_var.get().strip(),
+                    "proxy_port": self.proxy_port_var.get().strip()
+                }
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=2)
+            except Exception as e:
+                self.logger(f"Error saving config: {e}")
+
             src = self.get_resource_path("bing_daily_wallpaper.py")
             dst = INSTALL_DIR / "bing_daily_wallpaper.py"
             shutil.copy2(src, dst)
@@ -217,6 +329,7 @@ class BingWallpaperInstaller(tk.Tk):
             shortcut_path = target_dir / f"{name}.lnk"
             
             # For pythonw, Target = pythonw, Arguments = script
+            # WindowStyle = 7 means hidden window (prevents CMD window from appearing)
             ps_cmd = f"""
             $WshShell = New-Object -comObject WScript.Shell
             $Shortcut = $WshShell.CreateShortcut("{shortcut_path}")
@@ -224,6 +337,7 @@ class BingWallpaperInstaller(tk.Tk):
             $Shortcut.Arguments = '"{script_path}"'
             $Shortcut.WorkingDirectory = "{INSTALL_DIR}"
             $Shortcut.Description = "Bing Daily Wallpaper"
+            $Shortcut.WindowStyle = 7
             $Shortcut.Save()
             """
             
