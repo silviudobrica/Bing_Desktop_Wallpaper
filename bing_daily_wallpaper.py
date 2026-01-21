@@ -19,7 +19,7 @@ BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-
 SAVE_DIR = Path(os.environ["USERPROFILE"]) / "Pictures" / "Bing"
 APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "BingWallpaper"
 CONFIG_FILE = APP_DIR / "config.json"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # Interval presets in minutes
 INTERVAL_PRESETS = {

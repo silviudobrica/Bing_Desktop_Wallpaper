@@ -14,7 +14,7 @@ import threading
 # Configuration
 APP_NAME = "BingWallpaper"
 INSTALL_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / APP_NAME
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 class BingWallpaperInstaller(tk.Tk):
     def __init__(self):
