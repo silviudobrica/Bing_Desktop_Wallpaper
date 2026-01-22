@@ -13,13 +13,16 @@ import pystray
 from pystray import MenuItem as item
 import tkinter as tk
 from tkinter import ttk, simpledialog
+import winreg
+import urllib.request
+import re
 
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
 SAVE_DIR = Path(os.environ["USERPROFILE"]) / "Pictures" / "Bing"
 APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "BingWallpaper"
 CONFIG_FILE = APP_DIR / "config.json"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # Interval presets in minutes
 INTERVAL_PRESETS = {
@@ -62,6 +65,10 @@ class BingTrayApp:
         
         log_msg(f"Initializing Bing Wallpaper App v{VERSION}")
         log_msg(f"Check interval: {interval_minutes} minutes")
+
+        # Auto-detect proxy if not configured
+        if not self.get_proxy_dict():
+            self.detect_and_save_proxy()
 
     def load_config(self):
         """Load configuration from JSON file"""
@@ -139,6 +146,78 @@ class BingTrayApp:
         return None
 
 
+
+    def detect_and_save_proxy(self):
+        """Detect proxy via PAC and save to config if found"""
+        log_msg("Attempting to detect proxy via PAC...")
+        try:
+            pac_url = self.get_pac_url_from_registry()
+            if pac_url:
+                log_msg(f"Found PAC URL: {pac_url}")
+                raw_proxy = self.get_external_proxy_string(pac_url)
+                if raw_proxy:
+                    host, port = self.parse_proxy_string(raw_proxy)
+                    if host:
+                        log_msg(f"Detected Proxy: {host}:{port}")
+                        config = self.load_config()
+                        config['proxy_url'] = host
+                        config['proxy_port'] = port
+                        self.save_config(config)
+            else:
+                log_msg("No PAC URL found in registry.")
+        except Exception as e:
+            log_msg(f"Proxy detection error: {e}")
+
+    def get_pac_url_from_registry(self):
+        """Scans Windows Registry for AutoConfigURL"""
+        locations = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
+            (winreg.HKEY_CURRENT_USER, r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"),
+        ]
+        for hive, subkey in locations:
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    pac_url, _ = winreg.QueryValueEx(key, "AutoConfigURL")
+                    if pac_url:
+                        return pac_url
+            except Exception:
+                continue
+        return None
+
+    def get_external_proxy_string(self, pac_url):
+        """Downloads PAC and extracts proxy string"""
+        try:
+            with urllib.request.urlopen(pac_url) as response:
+                pac_content = response.read().decode('utf-8')
+            
+            # Try pypac
+            try:
+                from pypac.parser import PACFile
+                pac = PACFile(pac_content)
+                return pac.find_proxy_for_url("https://www.google.com", "www.google.com")
+            except ImportError:
+                pass 
+                
+            # Regex fallback
+            match = re.search(r'strPxlProxy\s*=\s*"(.*?)";', pac_content)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            log_msg(f"PAC processing error: {e}")
+        return None
+
+    def parse_proxy_string(self, proxy_string):
+        """Parses 'PROXY host:port'"""
+        if not proxy_string or "DIRECT" in proxy_string:
+            return None, None
+        clean_str = proxy_string.replace("PROXY ", "").split(";")[0].strip()
+        if ":" in clean_str:
+            host, port = clean_str.split(":")
+            return host, port
+        else:
+            return clean_str, "80"
 
     def get_bing_image_info(self):
         try:

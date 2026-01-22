@@ -5,6 +5,7 @@ import shutil
 import ctypes
 import tkinter as tk
 import winreg
+import urllib.request
 import re
 import json
 from tkinter import messagebox, ttk
@@ -14,7 +15,7 @@ import threading
 # Configuration
 APP_NAME = "BingWallpaper"
 INSTALL_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / APP_NAME
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 class BingWallpaperInstaller(tk.Tk):
     def __init__(self):
@@ -62,9 +63,90 @@ class BingWallpaperInstaller(tk.Tk):
             base_path = os.path.abspath(".")
         return os.path.join(base_path, relative_path)
 
+    def get_pac_url_from_registry(self):
+        """
+        Scans Windows Registry (User & System) for the auto-configuration script.
+        """
+        locations = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
+            (winreg.HKEY_CURRENT_USER, r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"),
+        ]
+
+        for hive, subkey in locations:
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    pac_url, _ = winreg.QueryValueEx(key, "AutoConfigURL")
+                    if pac_url:
+                        return pac_url
+            except Exception:
+                continue
+        return None
+
+    def get_external_proxy_string(self, pac_url):
+        """
+        Downloads the PAC file and determines the proxy string for 'google.com'.
+        """
+        target_url = "https://www.google.com"
+        
+        # 1. Download PAC content
+        try:
+            with urllib.request.urlopen(pac_url) as response:
+                pac_content = response.read().decode('utf-8')
+        except Exception as e:
+            self.logger(f"Error downloading PAC: {e}")
+            return None
+
+        # 2. Try 'pypac' (Accurate execution of JS)
+        try:
+            from pypac.parser import PACFile
+            pac = PACFile(pac_content)
+            return pac.find_proxy_for_url(target_url, "www.google.com")
+        except ImportError:
+            pass # Fallthrough to regex
+
+        # 3. Fallback: Regex extraction (Quick & Dirty)
+        # Looks for 'strPxlProxy = "PROXY host:port"'
+        match = re.search(r'strPxlProxy\s*=\s*"(.*?)";', pac_content)
+        if match:
+            return match.group(1) # Returns "PROXY proxy.url:port"
+        
+        return None
+
+    def parse_proxy_string(self, proxy_string):
+        """
+        Parses 'PROXY host:port' into ('host', 'port').
+        """
+        if not proxy_string or "DIRECT" in proxy_string:
+            return None, None
+
+        # Remove 'PROXY ' prefix and any trailing options (like '; DIRECT')
+        clean_str = proxy_string.replace("PROXY ", "").split(";")[0].strip()
+        
+        if ":" in clean_str:
+            host, port = clean_str.split(":")
+            return host, port
+        else:
+            return clean_str, "80" # Default port if missing
+
     def detect_system_proxy(self):
-        """Detect system proxy from environment or Windows settings"""
-        # Try environment variables first
+        """Detect system proxy from environment, PAC, or Windows settings"""
+        
+        # 1. Try PAC File (AutoConfigURL)
+        try:
+            pac_url = self.get_pac_url_from_registry()
+            if pac_url:
+                self.logger(f"Found PAC URL: {pac_url}")
+                raw_proxy = self.get_external_proxy_string(pac_url)
+                if raw_proxy:
+                    host, port = self.parse_proxy_string(raw_proxy)
+                    if host:
+                        return host, port
+        except Exception as e:
+            self.logger(f"PAC detection failed: {e}")
+
+        # 2. Try environment variables
         proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
         if proxy:
             # Parse http://proxy.example.com:80
@@ -76,7 +158,7 @@ class BingWallpaperInstaller(tk.Tk):
             if match:
                 return match.group(1), match.group(2)
         
-        # Try Windows Internet Settings (current user)
+        # 3. Try Windows Internet Settings (Static ProxyServer)
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                 r'Software\Microsoft\Windows\CurrentVersion\Internet Settings')
