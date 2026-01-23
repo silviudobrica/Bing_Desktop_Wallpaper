@@ -18,14 +18,13 @@ If you want to modify the code or rebuild the installer:
    ```powershell
    pip install -r requirements.txt
    pip install pyinstaller
-```
+   ```
 ### Run the Build Script
 
 PowerShell:
-
-```powershell
-.\build_installer.ps1
-```
+   ```powershell
+   .\build_installer.ps1
+   ```
 
 This script will:
 
