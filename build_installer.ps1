@@ -1,36 +1,39 @@
-# Check if PyInstaller is installed
+# build_installer.ps1
+# Ensure PyInstaller is present
 if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
-    Write-Host "PyInstaller not found. Installing..."
+    Write-Host "Installing PyInstaller..."
     pip install pyinstaller
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to install PyInstaller. Please ensure pip is in your PATH."
-        exit 1
-    }
 }
 
 $ScriptDir = $PSScriptRoot
 Set-Location $ScriptDir
 
-# Build the installer
-# --onefile: Create a single EXE
-# --uac-admin: Request Admin privileges on launch
-# --noconsole: Hide console window (for GUI)
-# --clean: Clean cache
-# --noconfirm: Don't ask to overwrite
-# --add-data: Bundle dependent files
+# 1. Clean previous builds
+Remove-Item -Recurse -Force "dist", "build" -ErrorAction SilentlyContinue
 
-Write-Host "Building Installer EXE..."
+# 2. Build the Main Application (BingWallpaper.exe)
+# --noconsole: Run silently
+Write-Host "Building Main Application..." -ForegroundColor Cyan
+pyinstaller --noconfirm --onefile --clean --noconsole --name "BingWallpaper" `
+    --add-data "_version.py;." `
+    "bing_daily_wallpaper.py"
 
-# Removed --uac-admin and --noconsole to fix bootloader issues.
-# The app will handle window hiding or just show a console for log output (which is fine for an installer).
-pyinstaller --noconfirm --onefile --clean --name "InstallBingWallpaper" `
-    --add-data "bing_daily_wallpaper.py;." `
-    --add-data "requirements.txt;." `
+if (-not (Test-Path "dist\BingWallpaper.exe")) {
+    Write-Error "Failed to build Main Application."
+    exit 1
+}
+
+# 3. Build the Installer (InstallBingWallpaper.exe)
+# We embed the newly built BingWallpaper.exe INSIDE the installer
+Write-Host "Building Installer..." -ForegroundColor Cyan
+pyinstaller --noconfirm --onefile --clean --noconsole --name "InstallBingWallpaper" `
+    --add-data "dist\BingWallpaper.exe;." `
+    --add-data "_version.py;." `
     "installer.py"
 
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "Build Successful!" -ForegroundColor Green
-    Write-Host "Installer is located at: $(Join-Path $ScriptDir 'dist\InstallBingWallpaper.exe')"
+if (Test-Path "dist\InstallBingWallpaper.exe") {
+    Write-Host "Build Complete!" -ForegroundColor Green
+    Write-Host "Installer: dist\InstallBingWallpaper.exe"
 } else {
-    Write-Error "Build Failed."
+    Write-Error "Failed to build Installer."
 }

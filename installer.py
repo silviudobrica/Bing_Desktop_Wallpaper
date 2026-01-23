@@ -1,476 +1,252 @@
+# installer.py
 import os
 import sys
-import subprocess
 import shutil
-import ctypes
 import tkinter as tk
+from tkinter import messagebox, ttk
+from pathlib import Path
 import winreg
 import urllib.request
 import re
 import json
-from tkinter import messagebox, ttk
-from pathlib import Path
-import threading
+import subprocess
 
-# Configuration
+try:
+    from _version import __version__ as VERSION
+except ImportError:
+    VERSION = "1.3.3"
+
 APP_NAME = "BingWallpaper"
+# Default Path: C:\Users\<User>\AppData\Local\Programs\BingWallpaper
 INSTALL_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / APP_NAME
-VERSION = "1.3.0"
 
-class BingWallpaperInstaller(tk.Tk):
+class SimpleInstaller(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"Bing Wallpaper Installer v{VERSION}")
-        self.geometry("400x500")
+        self.title(f"Install Bing Wallpaper v{VERSION}")
+        self.geometry("420x550")
         self.resizable(False, False)
-        
-        # Center window
         self.eval('tk::PlaceWindow . center')
         
-        self.style = ttk.Style()
-        self.style.configure("TButton", padding=6, relief="flat", background="#ccc")
-        
-        self.is_installed = self.check_installed()
-        
-        self.create_widgets()
+        self.create_ui()
 
-    def is_admin(self):
-        try:
-            return ctypes.windll.shell32.IsUserAnAdmin()
-        except:
-            return False
+    def create_ui(self):
+        # Header
+        ttk.Label(self, text=f"Bing Wallpaper v{VERSION}", font=("Segoe UI", 14, "bold")).pack(pady=10)
+        
+        status = "Installed" if INSTALL_DIR.exists() else "Not Installed"
+        status_color = "green" if INSTALL_DIR.exists() else "red"
+        ttk.Label(self, text=f"Status: {status}", foreground=status_color).pack()
+        
+        # Options
+        opts_frame = ttk.LabelFrame(self, text="Installation Options", padding=10)
+        opts_frame.pack(fill="x", padx=10, pady=10)
+        
+        self.startup_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opts_frame, text="Run at Startup", variable=self.startup_var).pack(anchor="w")
+        
+        self.desktop_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opts_frame, text="Create Desktop Shortcut", variable=self.desktop_var).pack(anchor="w")
+        
+        # Network
+        proxy_frame = ttk.LabelFrame(self, text="Network / Proxy (Optional)", padding=10)
+        proxy_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(proxy_frame, text="Host:").grid(row=0, column=0, padx=5, sticky="w")
+        self.proxy_host_var = tk.StringVar()
+        ttk.Entry(proxy_frame, textvariable=self.proxy_host_var, width=20).grid(row=0, column=1, padx=5)
+        
+        ttk.Label(proxy_frame, text="Port:").grid(row=0, column=2, padx=5, sticky="w")
+        self.proxy_port_var = tk.StringVar()
+        ttk.Entry(proxy_frame, textvariable=self.proxy_port_var, width=8).grid(row=0, column=3, padx=5)
+        
+        ttk.Button(proxy_frame, text="Auto-Detect Proxy", command=self.detect_proxy).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0))
 
-    def elevate(self):
+        # Actions
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=20)
+        
+        ttk.Button(btn_frame, text="Install / Update", command=self.install).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Uninstall", command=self.uninstall).pack(side=tk.LEFT, padx=5)
+        
+        self.btn_open = ttk.Button(btn_frame, text="Open Folder", command=self.open_folder, state=tk.DISABLED)
+        self.btn_open.pack(side=tk.LEFT, padx=5)
+        
+        # Log Window
+        log_frame = ttk.LabelFrame(self, text="Log", padding=5)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        self.log_text = tk.Text(log_frame, height=8, width=40, font=("Consolas", 8), state=tk.DISABLED)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+
+    def log(self, msg):
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, f"{msg}\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
+        self.update()
+
+    def detect_proxy(self):
+        self.log("Detecting proxy...")
         try:
-            if getattr(sys, 'frozen', False):
-                executable = sys.executable
-                args = ""
-            else:
-                executable = sys.executable
-                args = f'"{os.path.abspath(__file__)}"'
+            pac_url = self.get_pac_url()
+            if pac_url:
+                proxy = self.get_proxy_from_pac(pac_url)
+                if proxy:
+                    self.fill_proxy(proxy)
+                    return
             
-            ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, args, None, 1)
+            env_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+            if env_proxy:
+                self.fill_proxy(env_proxy)
+                return
+
+            self.log("No proxy detected.")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to elevate: {e}")
+            self.log(f"Detection error: {e}")
 
-    def check_installed(self):
-        return INSTALL_DIR.exists()
-
-    def get_resource_path(self, relative_path):
-        try:
-            base_path = sys._MEIPASS
-        except Exception:
-            base_path = os.path.abspath(".")
-        return os.path.join(base_path, relative_path)
-
-    def get_pac_url_from_registry(self):
-        """
-        Scans Windows Registry (User & System) for the auto-configuration script.
-        """
+    def get_pac_url(self):
         locations = [
             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
-            (winreg.HKEY_CURRENT_USER, r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"),
             (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
-            (winreg.HKEY_LOCAL_MACHINE, r"Software\Policies\Microsoft\Windows\CurrentVersion\Internet Settings"),
         ]
-
         for hive, subkey in locations:
             try:
                 with winreg.OpenKey(hive, subkey) as key:
-                    pac_url, _ = winreg.QueryValueEx(key, "AutoConfigURL")
-                    if pac_url:
-                        return pac_url
-            except Exception:
-                continue
+                    url, _ = winreg.QueryValueEx(key, "AutoConfigURL")
+                    if url: return url
+            except: continue
         return None
 
-    def get_external_proxy_string(self, pac_url):
-        """
-        Downloads the PAC file and determines the proxy string for 'google.com'.
-        """
-        target_url = "https://www.google.com"
-        
-        # 1. Download PAC content
+    def get_proxy_from_pac(self, pac_url):
         try:
-            with urllib.request.urlopen(pac_url) as response:
-                pac_content = response.read().decode('utf-8')
-        except Exception as e:
-            self.logger(f"Error downloading PAC: {e}")
-            return None
-
-        # 2. Try 'pypac' (Accurate execution of JS)
-        try:
-            from pypac.parser import PACFile
-            pac = PACFile(pac_content)
-            return pac.find_proxy_for_url(target_url, "www.google.com")
-        except ImportError:
-            pass # Fallthrough to regex
-
-        # 3. Fallback: Regex extraction (Quick & Dirty)
-        # Looks for 'strPxlProxy = "PROXY host:port"'
-        match = re.search(r'strPxlProxy\s*=\s*"(.*?)";', pac_content)
-        if match:
-            return match.group(1) # Returns "PROXY proxy.url:port"
-        
+            with urllib.request.urlopen(pac_url, timeout=5) as response:
+                content = response.read().decode('utf-8')
+                match = re.search(r'PROXY\s+([a-zA-Z0-9.-]+:\d+)', content)
+                if match: return match.group(1)
+        except: pass
         return None
 
-    def parse_proxy_string(self, proxy_string):
-        """
-        Parses 'PROXY host:port' into ('host', 'port').
-        """
-        if not proxy_string or "DIRECT" in proxy_string:
-            return None, None
-
-        # Remove 'PROXY ' prefix and any trailing options (like '; DIRECT')
-        clean_str = proxy_string.replace("PROXY ", "").split(";")[0].strip()
-        
-        if ":" in clean_str:
-            host, port = clean_str.split(":")
-            return host, port
-        else:
-            return clean_str, "80" # Default port if missing
-
-    def detect_system_proxy(self):
-        """Detect system proxy from environment, PAC, or Windows settings"""
-        
-        # 1. Try PAC File (AutoConfigURL)
-        try:
-            pac_url = self.get_pac_url_from_registry()
-            if pac_url:
-                self.logger(f"Found PAC URL: {pac_url}")
-                raw_proxy = self.get_external_proxy_string(pac_url)
-                if raw_proxy:
-                    host, port = self.parse_proxy_string(raw_proxy)
-                    if host:
-                        return host, port
-        except Exception as e:
-            self.logger(f"PAC detection failed: {e}")
-
-        # 2. Try environment variables
-        proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
-        if proxy:
-            # Parse http://proxy.example.com:80
-            match = re.search(r'://([^:]+):(\d+)', proxy)
-            if match:
-                return match.group(1), match.group(2)
-            # Try format without protocol: proxy.example.com:80
-            match = re.search(r'([^:]+):(\d+)', proxy)
-            if match:
-                return match.group(1), match.group(2)
-        
-        # 3. Try Windows Internet Settings (Static ProxyServer)
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                r'Software\Microsoft\Windows\CurrentVersion\Internet Settings')
-            proxy_enable, _ = winreg.QueryValueEx(key, 'ProxyEnable')
-            if proxy_enable:
-                proxy_server, _ = winreg.QueryValueEx(key, 'ProxyServer')
-                # Parse proxy.example.com:80
-                if ':' in proxy_server:
-                    # Handle multiple protocols (http=abc:80;https=xyz:80)
-                    if '=' in proxy_server:
-                        for part in proxy_server.split(';'):
-                            if part.startswith('http=') or part.startswith('https='):
-                                _, val = part.split('=', 1)
-                                if ':' in val:
-                                    return val.split(':', 1)
-                    else:
-                        return proxy_server.split(':', 1)
-        except Exception:
-            pass
-        
-        return "", ""
-
-    def logger(self, message):
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.insert(tk.END, message + "\n")
-        self.log_text.see(tk.END)
-        self.log_text.config(state=tk.DISABLED)
-        self.update_idletasks()
-
-    def create_widgets(self):
-        # Header
-        header_frame = ttk.Frame(self, padding="10")
-        header_frame.pack(fill=tk.X)
-        
-        title_label = ttk.Label(header_frame, text=f"Bing Daily Wallpaper v{VERSION}", font=("Segoe UI", 16, "bold"))
-        title_label.pack()
-        
-        status_text = "Status: Installed" if self.is_installed else "Status: Not Installed"
-        status_color = "green" if self.is_installed else "red"
-        
-        self.status_label = tk.Label(header_frame, text=status_text, fg=status_color, font=("Segoe UI", 10))
-        self.status_label.pack(pady=5)
-
-        # Content
-        content_frame = ttk.Frame(self, padding="10")
-        content_frame.pack(fill=tk.BOTH, expand=True)
-
-        if not self.is_installed:
-            # Install Options
-            ttk.Label(content_frame, text="Install Options:").pack(anchor=tk.W)
-            
-            self.scope_var = tk.StringVar(value="user")
-            ttk.Radiobutton(content_frame, text="Create Startup Shortcut (Current User)", variable=self.scope_var, value="user").pack(anchor=tk.W, padx=10)
-            ttk.Radiobutton(content_frame, text="Do Not Start Automatically", variable=self.scope_var, value="none").pack(anchor=tk.W, padx=10)
-            
-            ttk.Separator(content_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
-            
-            # Proxy Settings
-            ttk.Label(content_frame, text="Proxy Settings (Optional):").pack(anchor=tk.W)
-            
-            proxy_frame = ttk.Frame(content_frame)
-            proxy_frame.pack(fill=tk.X, pady=5)
-            
-            ttk.Label(proxy_frame, text="URL:").grid(row=0, column=0, padx=(0, 5), sticky=tk.W)
-            self.proxy_url_var = tk.StringVar()
-            ttk.Entry(proxy_frame, textvariable=self.proxy_url_var, width=25).grid(row=0, column=1, padx=(0, 10))
-            
-            ttk.Label(proxy_frame, text="Port:").grid(row=0, column=2, padx=(0, 5), sticky=tk.W)
-            self.proxy_port_var = tk.StringVar()
-            ttk.Entry(proxy_frame, textvariable=self.proxy_port_var, width=6).grid(row=0, column=3)
-            
-            detect_btn = ttk.Button(content_frame, text="Detect System Proxy", command=self.on_detect_proxy)
-            detect_btn.pack(pady=(0, 10), fill=tk.X)
-            
-            ttk.Separator(content_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
-            
-            self.action_btn = ttk.Button(content_frame, text="Install", command=self.start_install_thread)
-            self.action_btn.pack(pady=5, fill=tk.X)
-            
-        else:
-            # Uninstall Options
-            ttk.Label(content_frame, text="The application is currently installed.").pack(pady=(0, 10))
-            
-            # Button to launch if installed
-            self.launch_btn = ttk.Button(content_frame, text="Launch App Now", command=self.launch_installed_app)
-            self.launch_btn.pack(pady=5, fill=tk.X)
-            
-            self.action_btn = ttk.Button(content_frame, text="Uninstall", command=self.start_uninstall_thread)
-            self.action_btn.pack(pady=5, fill=tk.X)
-
-        # Log Area
-        ttk.Label(content_frame, text="Log:").pack(anchor=tk.W, pady=(10, 0))
-        self.log_text = tk.Text(content_frame, height=8, width=40, state=tk.DISABLED, font=("Consolas", 8))
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-
-    def on_detect_proxy(self):
-        url, port = self.detect_system_proxy()
-        if url:
-            self.proxy_url_var.set(url)
+    def fill_proxy(self, proxy_str):
+        clean = proxy_str.replace("http://", "").replace("https://", "").split("/")[0]
+        if ":" in clean:
+            host, port = clean.split(":")
+            self.proxy_host_var.set(host)
             self.proxy_port_var.set(port)
-            self.logger(f"Detected proxy: {url}:{port}")
+            self.log(f"Detected: {host}:{port}")
         else:
-            self.logger("No system proxy detected.")
+            self.proxy_host_var.set(clean)
+            self.proxy_port_var.set("80")
 
-    def start_install_thread(self):
-        self.action_btn.config(state=tk.DISABLED)
-        threading.Thread(target=self.install_process, daemon=True).start()
-
-    def start_uninstall_thread(self):
-        self.action_btn.config(state=tk.DISABLED)
-        threading.Thread(target=self.uninstall_process, daemon=True).start()
-
-    def install_process(self):
+    def install(self):
+        self.log("Starting installation...")
+        self.log(f"Target: {INSTALL_DIR}")
+        
         try:
-            self.logger("Starting installation...")
-            
-            # 1. Check Python
-            python_cmd = shutil.which("python")
-            # ... (Winget/Search logic is same as before, simplified for brevity but good to keep if possible. 
-            # I will trust the environment has python or previous step would have installed it, 
-            # but let's keep the block just in case.)
-            if not python_cmd:
-                self.logger("Python not found. Attempting Winget...")
-                 # ... Skipping winget block details to save tokens/lines if not critical, but will include brief check
-                if shutil.which("winget"):
-                     # Just assume success or log
-                     pass
-            
-            # Fallback path search again
-            if not python_cmd:
-                 common_paths = [
-                     Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Python" / "Python312" / "python.exe",
-                     Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Python" / "Python311" / "python.exe",
-                     Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Python" / "Python310" / "python.exe",
-                 ]
-                 for p in common_paths:
-                     if p.exists():
-                         python_cmd = str(p)
-                         break
-            
-            if not python_cmd:
-                self.logger("Could not find Python.")
-                messagebox.showerror("Error", "Python 3 is required but not found.")
-                return
-
-            self.logger(f"Using Python: {python_cmd}")
-            
-            # Try to find pythonw.exe
-            python_w = None
-            
-            # 1. Look next to current python executable
-            if sys.executable:
-                p = Path(sys.executable).parent / "pythonw.exe"
-                if p.exists():
-                    python_w = str(p)
-            
-            # 2. Look next to detected python_cmd
-            if not python_w and python_cmd:
-                p = Path(python_cmd).parent / "pythonw.exe"
-                if p.exists():
-                    python_w = str(p)
-            
-            # 3. Look in PATH
-            if not python_w:
-                python_w = shutil.which("pythonw")
-                
-            # Fallback
-            if not python_w:
-                self.logger("Warning: pythonw.exe not found. Console window may appear.")
-                python_w = python_cmd
-            else:
-                self.logger(f"Using PythonW: {python_w}")
-
-            # 2. Install Requirements
-            self.logger("Installing dependencies...")
-            req_file = self.get_resource_path("requirements.txt")
-            if os.path.exists(req_file):
-                try:
-                    proxy_url = self.proxy_url_var.get().strip()
-                    proxy_port = self.proxy_port_var.get().strip()
-                    
-                    cmd = [python_cmd, "-m", "pip", "install"]
-                    if proxy_url and proxy_port:
-                        proxy = f"http://{proxy_url}:{proxy_port}"
-                        self.logger(f"Using proxy for pip: {proxy}")
-                        cmd.extend(["--proxy", proxy])
-                        
-                    cmd.extend(["-r", req_file])
-                    subprocess.check_call(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
-                except Exception as e:
-                    self.logger(f"Pip install error (non-fatal): {e}")
-
-            # 3. Copy Files
-            self.logger(f"Creating directory {INSTALL_DIR}...")
             INSTALL_DIR.mkdir(parents=True, exist_ok=True)
             
-            # Save proxy settings (and default interval)
-            try:
-                config_file = INSTALL_DIR / "config.json"
-                config = {
-                    "check_interval_minutes": 720,
-                    "proxy_url": self.proxy_url_var.get().strip(),
-                    "proxy_port": self.proxy_port_var.get().strip()
-                }
-                with open(config_file, 'w') as f:
-                    json.dump(config, f, indent=2)
-            except Exception as e:
-                self.logger(f"Error saving config: {e}")
-
-            src = self.get_resource_path("bing_daily_wallpaper.py")
-            dst = INSTALL_DIR / "bing_daily_wallpaper.py"
-            shutil.copy2(src, dst)
-            self.logger("Files copied.")
-
-            # 4. Create Shortcuts
-            scope = self.scope_var.get()
-            
-            # Desktop Shortcut
-            self.create_shortcut("Bing Wallpaper", dst, python_w, "Desktop")
-            
-            # Startup Shortcut
-            if scope == "user":
-                self.create_shortcut("Bing Wallpaper", dst, python_w, "Startup")
-
-            # 5. Start App
-            self.logger("Starting application...")
-            subprocess.Popen([python_w, str(dst)], cwd=str(INSTALL_DIR), creationflags=subprocess.CREATE_NO_WINDOW)
-            
-            self.logger("Installation Complete!")
-            messagebox.showinfo("Success", "Bing Wallpaper has been installed.")
-            self.quit()
-            
-        except Exception as e:
-            self.logger(f"Error: {e}")
-            messagebox.showerror("Error", str(e))
-        finally:
-             self.action_btn.config(state=tk.NORMAL)
-
-    def create_shortcut(self, name, script_path, python_path, location_name):
-        self.logger(f"Creating {location_name} shortcut...")
-        try:
-             # Use Powershell to create shortcut
-            if location_name == "Startup":
-                target_dir = Path(os.getenv("APPDATA")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-            elif location_name == "Desktop":
-                target_dir = Path(os.environ["USERPROFILE"]) / "Desktop"
+            # 1. Source Detection
+            if getattr(sys, 'frozen', False):
+                base_path = sys._MEIPASS
+                src_exe = Path(base_path) / "BingWallpaper.exe"
             else:
+                src_exe = Path("dist/BingWallpaper.exe") 
+            
+            if not src_exe.exists(): src_exe = Path("BingWallpaper.exe")
+
+            if not src_exe.exists():
+                messagebox.showerror("Error", f"Source file missing:\n{src_exe}")
+                self.log("Source file missing.")
                 return
 
-            shortcut_path = target_dir / f"{name}.lnk"
+            # 2. File Copy
+            dst_exe = INSTALL_DIR / "BingWallpaper.exe"
+            self.log(f"Copying to {dst_exe}...")
+            shutil.copy2(src_exe, dst_exe)
             
-            # For pythonw, Target = pythonw, Arguments = script
-            # WindowStyle = 7 means hidden window (prevents CMD window from appearing)
-            ps_cmd = f"""
-            $WshShell = New-Object -comObject WScript.Shell
-            $Shortcut = $WshShell.CreateShortcut("{shortcut_path}")
-            $Shortcut.TargetPath = "{python_path}"
-            $Shortcut.Arguments = '"{script_path}"'
-            $Shortcut.WorkingDirectory = "{INSTALL_DIR}"
-            $Shortcut.Description = "Bing Daily Wallpaper"
-            $Shortcut.WindowStyle = 7
-            $Shortcut.Save()
+            if not dst_exe.exists():
+                raise Exception("Copy failed - File not found at destination.")
+
+            # 3. Config
+            config_data = {
+                "check_interval_minutes": 720,
+                "proxy_url": self.proxy_host_var.get().strip(),
+                "proxy_port": self.proxy_port_var.get().strip()
+            }
+            config_path = INSTALL_DIR / "config.json"
+            if not config_path.exists() or (config_data["proxy_url"]):
+                with open(config_path, 'w') as f:
+                    json.dump(config_data, f, indent=2)
+
+            # 4. Shortcuts (Using subprocess for safety)
+            if self.desktop_var.get():
+                self.create_shortcut(dst_exe, "Bing Wallpaper", "Desktop")
+            
+            if self.startup_var.get():
+                self.create_shortcut(dst_exe, "Bing Wallpaper", "Startup")
+            
+            # 5. Success State
+            self.log("Installation Successful!")
+            self.btn_open.config(state=tk.NORMAL)
+            
+            # Launch
+            self.log("Launching app...")
+            os.startfile(dst_exe)
+            
+            messagebox.showinfo("Success", "Installation Complete!")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Install failed: {str(e)}")
+            self.log(f"Error: {str(e)}")
+
+    def create_shortcut(self, target, name, folder):
+        try:
+            if folder == "Startup":
+                link_dir = Path(os.getenv("APPDATA")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+            else:
+                link_dir = Path(os.environ["USERPROFILE"]) / "Desktop"
+            
+            link_dir.mkdir(parents=True, exist_ok=True)
+            link_path = link_dir / f"{name}.lnk"
+            
+            self.log(f"Creating {folder} shortcut...")
+            
+            # Safe PowerShell command using Subprocess
+            ps_script = f"""
+            $ws = New-Object -ComObject WScript.Shell
+            $s = $ws.CreateShortcut('{str(link_path)}')
+            $s.TargetPath = '{str(target)}'
+            $s.WorkingDirectory = '{str(INSTALL_DIR)}'
+            $s.Save()
             """
             
-            subprocess.run(["powershell", "-Command", ps_cmd], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(["powershell", "-Command", ps_script], check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             
         except Exception as e:
-            self.logger(f"Shortcut Error: {e}")
+            self.log(f"Shortcut Error ({folder}): {e}")
 
-    def launch_installed_app(self):
-        script_path = INSTALL_DIR / "bing_daily_wallpaper.py"
-        if script_path.exists():
-             # Just try to find pythonw again or assume path
-             # for simplicity, assume standard pythonw or just python
-             subprocess.Popen(["pythonw", str(script_path)], cwd=str(INSTALL_DIR), shell=True)
-        else:
-            messagebox.showerror("Error", "App file not found.")
-
-    def uninstall_process(self):
+    def uninstall(self):
         try:
-            self.logger("Starting uninstallation...")
-            
-            # 1. Kill Process
-            subprocess.run(f'taskkill /F /IM "pythonw.exe" /FI "WINDOWTITLE eq Bing Wallpaper*"', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            
-            # 2. Remove Shortcuts
-            startup_lnk = Path(os.getenv("APPDATA")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Bing Wallpaper.lnk"
-            desktop_lnk = Path(os.environ["USERPROFILE"]) / "Desktop" / "Bing Wallpaper.lnk"
-            
-            if startup_lnk.exists(): startup_lnk.unlink()
-            if desktop_lnk.exists(): desktop_lnk.unlink()
-            
-            # 3. Remove Registry (Cleanup old versions)
-            try:
-                subprocess.run('reg delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v BingDailyWallpaper /f', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            except: pass
-
-            # 4. Remove Files
+            os.system('taskkill /F /IM "BingWallpaper.exe" >nul 2>&1')
             if INSTALL_DIR.exists():
-                shutil.rmtree(INSTALL_DIR, ignore_errors=True)
+                shutil.rmtree(INSTALL_DIR)
             
-            self.logger("Uninstallation Complete!")
-            messagebox.showinfo("Success", "Bing Wallpaper has been uninstalled.")
-            self.quit()
+            startup = Path(os.getenv("APPDATA")) / "Microsoft/Windows/Start Menu/Programs/Startup/Bing Wallpaper.lnk"
+            desktop = Path(os.environ["USERPROFILE"]) / "Desktop" / "Bing Wallpaper.lnk"
             
+            if startup.exists(): startup.unlink()
+            if desktop.exists(): desktop.unlink()
+                
+            self.log("Uninstalled.")
+            self.btn_open.config(state=tk.DISABLED)
+            messagebox.showinfo("Success", "Uninstalled successfully.")
         except Exception as e:
-            self.logger(f"Error: {e}")
             messagebox.showerror("Error", str(e))
-        finally:
-            self.action_btn.config(state=tk.NORMAL)
+
+    def open_folder(self):
+        if INSTALL_DIR.exists():
+            os.startfile(INSTALL_DIR)
 
 if __name__ == "__main__":
-    app = BingWallpaperInstaller()
+    app = SimpleInstaller()
     app.mainloop()
-

@@ -2,65 +2,95 @@
 
 ## Installation Guide
 
-### Option 1: Using the Installer (Recommended)
-1. **Build the Installer**:
-   Open PowerShell in the project directory and run:
+### Option 1: Using the Installer (Recommended for Users)
+1. **Download/Build**: Obtain `InstallBingWallpaper.exe` from the `dist` folder.
+2. **Run**: Double-click the installer.
+   - **No Admin Rights Needed**: The app installs to your local user profile, so you do not need Administrator privileges.
+   - **Offline Ready**: The installer includes all necessary files. You do not need an internet connection to install (though you need one to fetch wallpapers!).
+3. **Finish**: Click **Install**. The app will start automatically, and a shortcut will be added to your Startup folder (if selected).
+
+### Option 2: Building from Source (For Developers)
+
+If you want to modify the code or rebuild the installer:
+
+1. **Install Python**: Ensure Python 3.10+ is installed.
+2. **Install Dependencies**:
    ```powershell
-   .\build_installer.ps1
-   ```
-   This will create a standalone executable in the `dist` folder.
-
-2. **Run the Installer**:
-   Navigate to the `dist` folder and run `InstallBingWallpaper.exe`.
-   - **Proxy Settings**: If you are behind a corporate firewall, enter your Proxy URL (e.g., `proxy.example.com`) and Port (e.g., `80`) before installing. You can use the **Detect System Proxy** button to automatically fill these fields.
-   - Click **Install**.
-   - Ensure "Create Startup Shortcut" is checked to have the app run automatically when you log in.
-   - The installer will handle setting up Python if it's missing (requires internet).
-
-### Option 2: Manual Run (For Developers)
-1. Install Python 3 (Python 3.11+ recommended).
-2. Install dependencies:
-   ```bash
    pip install -r requirements.txt
-   ```
-3. Run the script:
-   ```bash
-   python bing_daily_wallpaper.py
-   ```
+   pip install pyinstaller
+```
+### Run the Build Script
 
-## Usage Guide
+PowerShell:
 
-### System Tray
-Once running, you will see a small icon in your system tray (bottom right, near the clock). You may need to click the `^` arrow to see hidden icons.
-
-- **Double-Click (or Right-Click -> Preview)**: Opens the Image Gallery window.
-- **Right-Click -> Check for Updates**: Forces an immediate check for a new wallpaper.
-- **Right-Click -> Check Interval**: Change how often the app checks for new wallpapers (Default: 12 Hours).
-  - **Presets**: 15 min, 30 min, 1h, 4h, 6h, 12h, 24h.
-  - **Custom**: Enter a custom duration in minutes.
-  - **Disabled**: Disable automatic background checks (manual updates only).
-- **Right-Click -> Exit**: Closes the application completely.
-
-### Image Gallery
-The Preview window shows the currently set wallpaper.
-- **Bottom List**: Shows previously downloaded images.
-- **Click an Image**: Instantly sets that image as your desktop background.
-
-### Configuration
-The application stores its configuration in:
-`%LOCALAPPDATA%\Programs\BingWallpaper\config.json`
-
-Example configuration:
-```json
-{
-  "check_interval_minutes": 720,
-  "proxy_url": "proxy.example.com",
-  "proxy_port": "80"
-}
+```powershell
+.\build_installer.ps1
 ```
 
-## Troubleshooting
-- **Logs**: If the app isn't working, check the log file located at:
-  `%USERPROFILE%\Pictures\Bing\bing_wallpaper.log`
-- **Startup**: If the app doesn't start on login, check your "Startup" folder or re-run the installer.
-- **Proxy**: If images aren't downloading, verify your proxy settings in `config.json` or reinstall with the correct proxy details.
+This script will:
+
+*   **Compile** bing\_daily\_wallpaper.py into a standalone EXE.
+    
+*   **Bundle** that EXE inside installer.py.
+    
+*   **Output** the final installer to the dist folder.
+    
+
+Usage Guide
+-----------
+
+### System Tray
+
+The app runs in the background. Look for the Bing icon in your system tray (near the clock).
+
+**Right-Click Menu:**
+
+*   **Preview / Gallery:** Opens the visual gallery of downloaded wallpapers.
+    
+*   **Check Now:** Forces an immediate update check.
+    
+*   **Interval:** Set how often to check (15 mins to 24 hours).
+    
+*   **Exit:** Quits the app completely.
+    
+
+Configuration & Data Locations
+------------------------------
+
+The application follows standard Windows practices for file storage:
+
+*   **Wallpapers:** %USERPROFILE%\\Pictures\\Bing_(Your downloaded images are kept here so you can easily find them.)_
+    
+*   **Configuration:** %LOCALAPPDATA%\\Programs\\BingWallpaper\\config.json_(Stores your proxy settings and update interval preference.)_
+    
+*   **Logs:** %LOCALAPPDATA%\\Programs\\BingWallpaper\\logs\\_(Technical logs for troubleshooting.)_
+    
+
+Troubleshooting
+---------------
+
+### "I don't see the icon!"
+
+*   Click the ^ (Show hidden icons) arrow in the taskbar.
+    
+*   Check if the process BingWallpaper.exe is running in Task Manager.
+    
+
+### Images aren't downloading
+
+*   **Check Internet:** Ensure you can visit bing.com in your browser.
+    
+*   **Check Logs:** Open the log folder (see path above) and view bing\_wallpaper.log. Look for "ConnectionError" or "Proxy" errors.
+    
+*   **Proxy Settings:** If you are on a corporate network:
+    
+    *   The app attempts to auto-detect proxies.
+        
+    *   You can manually edit config.json to add your proxy URL and Port if auto-detection fails.
+        
+
+### App doesn't start on login
+
+*   Run the installer again and ensure "Run at Startup" is checked.
+    
+*   Alternatively, press Win+R, type shell:startup, and ensure a shortcut to **Bing Wallpaper** exists there.
