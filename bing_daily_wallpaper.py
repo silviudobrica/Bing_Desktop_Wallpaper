@@ -8,7 +8,6 @@ import time
 import threading
 import logging
 import json
-import shutil
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from requests.adapters import HTTPAdapter
@@ -21,11 +20,24 @@ from tkinter import ttk, simpledialog
 import winreg
 import re
 
+def check_single_instance():
+    mutex_name = "Local\\BingWallpaperTrayAppMutex"
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    if ctypes.windll.kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
+        print("Application is already running.")
+        sys.exit(0)
+    return mutex # Keep a reference so it isn't garbage collected
+
+# Windows constants
+SPI_SETDESKWALLPAPER = 0x0014 # 20
+SPIF_UPDATEINIFILE = 0x01
+SPIF_SENDWININICHANGE = 0x02
+
 # Import centralized version
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.2"
+    VERSION = "1.3.3"
 
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
@@ -203,7 +215,7 @@ class BingTrayApp:
             data = resp.json()
             if not data.get("images"): return None
             img_data = data["images"][0]
-            return ("https://www.bing.com" + img_data["url"], img_data["startdate"])
+            return ("https://www.bing.com" + img_data["urlbase"] + "_UHD.jpg", img_data["startdate"])
         except Exception as e:
             log_msg(f"API Fetch Error: {e}", "error")
             return None
@@ -230,7 +242,7 @@ class BingTrayApp:
             try:
                 with Image.open(temp_path) as img:
                     img.verify()
-                shutil.move(temp_path, file_path)
+                temp_path.replace(file_path)
                 return file_path
             except Exception:
                 if temp_path.exists(): os.remove(temp_path)
@@ -245,7 +257,12 @@ class BingTrayApp:
             return
         try:
             log_msg(f"Setting wallpaper: {image_path.name}")
-            ctypes.windll.user32.SystemParametersInfoW(20, 0, str(image_path), 3)
+            ctypes.windll.user32.SystemParametersInfoW(
+                SPI_SETDESKWALLPAPER, 
+                0, 
+                str(image_path), 
+                SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE
+            )
             self.current_image_path = image_path
             self.update_tray_icon(image_path)
         except Exception as e:
@@ -409,7 +426,16 @@ class BingTrayApp:
             
             lbl.bind("<Button-1>", lambda e, p=img_path: self.set_wallpaper(p))
             
-            tk.Label(f, text=img_path.name[-12:], font=("Consolas", 8)).pack() 
+            # Extract '20260408' from 'bing_20260408.jpg'
+            date_str = img_path.stem.split('_')[-1] 
+            try:
+                # Convert 'YYYYMMDD' to 'Apr 08, 2026'
+                parsed_date = datetime.datetime.strptime(date_str, "%Y%m%d")
+                display_name = parsed_date.strftime("%b %d, %Y")
+            except ValueError:
+                display_name = img_path.stem
+
+            tk.Label(f, text=display_name, font=("Consolas", 8)).pack()
             
         except Exception: pass
 
@@ -429,5 +455,6 @@ class BingTrayApp:
             self.running = False
 
 if __name__ == "__main__":
+    app_mutex = check_single_instance()
     app = BingTrayApp()
     app.run()
