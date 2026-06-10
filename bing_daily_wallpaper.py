@@ -19,9 +19,10 @@ from PIL import Image, ImageTk, UnidentifiedImageError
 import pystray
 from pystray import MenuItem as item
 import tkinter as tk
-from tkinter import ttk, simpledialog, messagebox
+from tkinter import ttk, simpledialog, messagebox, filedialog
 import winreg
 import re
+from requests.exceptions import SSLError
 
 def check_single_instance():
     mutex_name = "Local\\BingWallpaperTrayAppMutex"
@@ -140,6 +141,19 @@ class BingTrayApp:
         window.bind('<Control-comma>', lambda e: self.show_settings_window())
         window.bind('<F5>', lambda e: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start())
 
+    def get_verify_option(self):
+        ca_bundle_path = str(self.config.get("ca_bundle_path", "")).strip()
+        if not ca_bundle_path:
+            return True
+        if Path(ca_bundle_path).exists():
+            return ca_bundle_path
+        log_msg(f"Configured CA bundle path not found: {ca_bundle_path}", "error")
+        return True
+
+    def session_get(self, url, **kwargs):
+        kwargs.setdefault("verify", self.get_verify_option())
+        return self.session.get(url, **kwargs)
+
     def load_config(self):
         try:
             if CONFIG_FILE.exists():
@@ -209,7 +223,7 @@ class BingTrayApp:
                 "Accept": "application/vnd.github+json",
                 "User-Agent": f"{APP_NAME}/{VERSION}"
             }
-            resp = self.session.get(RELEASES_API, timeout=10, proxies=self.get_proxy_dict(), headers=headers)
+            resp = self.session_get(RELEASES_API, timeout=10, proxies=self.get_proxy_dict(), headers=headers)
             resp.raise_for_status()
             data = resp.json()
             tag_name = data.get("tag_name", "")
@@ -253,7 +267,7 @@ class BingTrayApp:
         headers = {
             "User-Agent": f"{APP_NAME}/{VERSION}"
         }
-        resp = self.session.get(url, timeout=90, proxies=self.get_proxy_dict(), headers=headers, stream=True)
+        resp = self.session_get(url, timeout=90, proxies=self.get_proxy_dict(), headers=headers, stream=True)
         resp.raise_for_status()
 
         with open(temp_target, 'wb') as f:
@@ -303,6 +317,21 @@ class BingTrayApp:
                 self.root.after(300, lambda: self.launch_installer_and_exit(installer_path))
             else:
                 self.launch_installer_and_exit(installer_path)
+        except SSLError as e:
+            self.record_error(f"Update download SSL verification failed: {e}")
+            fallback_url = info.get("url") or info.get("html_url")
+            if fallback_url:
+                log_msg(f"Falling back to browser download due to SSL verification failure: {fallback_url}", "error")
+                if self.root:
+                    self.root.after(0, lambda: messagebox.showwarning(
+                        "Update",
+                        "The app could not verify your network SSL certificate while downloading the installer.\n\n"
+                        "This commonly happens on corporate proxies with SSL inspection.\n"
+                        "The release page/download URL will be opened in your browser as a fallback."
+                    ))
+                webbrowser.open(fallback_url)
+                self.last_status_message = "Updater fallback: download opened in browser"
+                self.update_status_panel()
         except Exception as e:
             self.record_error(f"Update install failed: {e}")
             if self.root:
@@ -396,6 +425,34 @@ class BingTrayApp:
         except Exception as e:
             self.record_error(f"Unable to open path: {e}")
 
+    def test_https_connectivity(self):
+        endpoints = [
+            ("GitHub Releases API", RELEASES_API),
+            ("Bing Image API", BING_API),
+        ]
+        results = []
+        for label, url in endpoints:
+            try:
+                resp = self.session_get(url, timeout=10, proxies=self.get_proxy_dict())
+                resp.raise_for_status()
+                results.append(f"[OK] {label}: HTTP {resp.status_code}")
+            except Exception as e:
+                results.append(f"[FAIL] {label}: {e}")
+
+        ok_count = sum(1 for row in results if row.startswith("[OK]"))
+        full_msg = "\n".join(results)
+        log_msg(f"HTTPS test results:\n{full_msg}")
+
+        if ok_count == len(endpoints):
+            self.last_status_message = "HTTPS test passed"
+            self.update_status_panel()
+            if self.root:
+                self.root.after(0, lambda: messagebox.showinfo("HTTPS Test", full_msg))
+        else:
+            self.record_error("HTTPS test failed")
+            if self.root:
+                self.root.after(0, lambda: messagebox.showwarning("HTTPS Test", full_msg))
+
     def detect_proxy_values(self):
         pac_url = self.get_pac_url_from_registry()
         if not pac_url:
@@ -455,7 +512,7 @@ class BingTrayApp:
 
         settings_win = tk.Toplevel(self.root)
         settings_win.title("Settings")
-        settings_win.geometry("460x420")
+        settings_win.geometry("560x500")
         settings_win.resizable(False, False)
         settings_win.transient(self.root)
         settings_win.grab_set()
@@ -500,15 +557,35 @@ class BingTrayApp:
 
         ttk.Button(frame, text="Auto-Detect Proxy", command=auto_detect_proxy).grid(row=5, column=2, sticky="w", pady=(6, 0))
 
-        ttk.Separator(frame).grid(row=6, column=0, columnspan=3, sticky="ew", pady=12)
+        ttk.Label(frame, text="CA Bundle (PEM, optional)").grid(row=6, column=0, sticky="w", pady=(10, 0))
+        ca_bundle_var = tk.StringVar(value=self.config.get("ca_bundle_path", ""))
+        ttk.Entry(frame, textvariable=ca_bundle_var, width=50).grid(row=6, column=1, columnspan=2, sticky="w", pady=(10, 0))
+
+        def browse_ca_bundle():
+            selected = filedialog.askopenfilename(
+                parent=settings_win,
+                title="Select CA Bundle (PEM)",
+                filetypes=[("PEM files", "*.pem"), ("All files", "*.*")]
+            )
+            if selected:
+                ca_bundle_var.set(selected)
+
+        ttk.Button(frame, text="Browse...", command=browse_ca_bundle).grid(row=7, column=2, sticky="w", pady=(6, 0))
+
+        ttk.Separator(frame).grid(row=8, column=0, columnspan=3, sticky="ew", pady=12)
 
         startup_var = tk.BooleanVar(value=self.is_startup_enabled())
-        ttk.Checkbutton(frame, text="Run at Startup", variable=startup_var).grid(row=7, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(frame, text="Run at Startup", variable=startup_var).grid(row=9, column=0, columnspan=3, sticky="w")
 
         actions = ttk.Frame(frame)
-        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(14, 8))
+        actions.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(14, 8))
         ttk.Button(actions, text="Open Wallpaper Folder", command=lambda: self.open_path(IMAGE_DIR)).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(actions, text="Open Logs", command=lambda: self.open_path(LOG_DIR)).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Test HTTPS",
+            command=lambda: threading.Thread(target=self.test_https_connectivity, daemon=True).start()
+        ).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
             actions,
             text="Check for Updates",
@@ -530,6 +607,7 @@ class BingTrayApp:
 
                 self.config["proxy_url"] = proxy_host_var.get().strip()
                 self.config["proxy_port"] = proxy_port_var.get().strip()
+                self.config["ca_bundle_path"] = ca_bundle_var.get().strip()
                 self.save_config()
                 self.set_startup_enabled(startup_var.get())
 
@@ -540,7 +618,7 @@ class BingTrayApp:
                 messagebox.showerror("Settings", f"Unable to save settings: {e}")
 
         btn_row = ttk.Frame(frame)
-        btn_row.grid(row=9, column=0, columnspan=3, sticky="e")
+        btn_row.grid(row=11, column=0, columnspan=3, sticky="e")
         ttk.Button(btn_row, text="Cancel", command=settings_win.destroy).pack(side=tk.RIGHT)
         ttk.Button(btn_row, text="Save", command=save_settings).pack(side=tk.RIGHT, padx=(0, 8))
         settings_win.bind('<Return>', lambda e: save_settings())
@@ -581,7 +659,7 @@ class BingTrayApp:
 
     def get_proxy_from_pac(self, pac_url):
         try:
-            resp = self.session.get(pac_url, timeout=5)
+            resp = self.session_get(pac_url, timeout=5)
             if resp.status_code == 200:
                 match = re.search(r'PROXY\s+([a-zA-Z0-9.-]+:\d+)', resp.text)
                 if match: return match.group(1)
@@ -595,7 +673,7 @@ class BingTrayApp:
 
     def get_bing_image_info(self):
         try:
-            resp = self.session.get(BING_API, timeout=10, proxies=self.get_proxy_dict())
+            resp = self.session_get(BING_API, timeout=10, proxies=self.get_proxy_dict())
             resp.raise_for_status()
             data = resp.json()
             if not data.get("images"): return None
@@ -613,7 +691,7 @@ class BingTrayApp:
             return file_path
         
         try:
-            resp = self.session.get(url, timeout=30, proxies=self.get_proxy_dict(), stream=True)
+            resp = self.session_get(url, timeout=30, proxies=self.get_proxy_dict(), stream=True)
             resp.raise_for_status()
             
             if 'image' not in resp.headers.get('Content-Type', ''):
