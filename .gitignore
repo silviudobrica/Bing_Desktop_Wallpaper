@@ -1,2 +1,11 @@
 build/
 dist/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+env/
+venv/
+.pre-commit-cache/

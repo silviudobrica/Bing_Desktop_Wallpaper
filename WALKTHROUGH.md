@@ -26,6 +26,25 @@ PowerShell:
    .\build_installer.ps1
    ```
 
+Optional signing (if you have a PFX certificate):
+   ```powershell
+   $env:SIGN_CERT_PATH = "C:\path\to\codesign.pfx"
+   $env:SIGN_CERT_PASSWORD = "your-password"
+   .\build_installer.ps1
+   ```
+
+If signing variables are not set, the build still succeeds and skips signing.
+
+Optional pre-commit check (recommended for contributors):
+   ```powershell
+   pip install pre-commit
+   pre-commit install
+   ```
+
+This enables a local hook that verifies `_version.py` and `file_version_info.txt` stay in sync before each commit.
+It also compiles the core Python files to catch syntax errors before commit.
+Additionally, a lightweight smoke check validates packaging-critical wiring (spec metadata and build script version generation).
+
 This script will:
 
 *   **Compile** bing\_daily\_wallpaper.py into a standalone EXE.
@@ -45,12 +64,21 @@ The app runs in the background. Look for the Bing icon in your system tray (near
 **Right-Click Menu:**
 
 *   **Preview / Gallery:** Opens the visual gallery of downloaded wallpapers.
+*   **Settings:** Opens full app settings (interval, proxy, startup, update check, quick folder actions).
     
 *   **Check Now:** Forces an immediate update check.
+
+*   **Check for Updates:** Checks GitHub for a newer app version and offers direct install.
     
 *   **Interval:** Set how often to check (15 mins to 24 hours).
     
 *   **Exit:** Quits the app completely.
+
+### Keyboard Shortcuts
+
+*   **Esc:** Hide/close active app window.
+*   **Ctrl+R** or **F5:** Trigger immediate wallpaper check.
+*   **Ctrl+,**: Open Settings.
     
 
 Configuration & Data Locations
@@ -93,3 +121,26 @@ Troubleshooting
 *   Run the installer again and ensure "Run at Startup" is checked.
     
 *   Alternatively, press Win+R, type shell:startup, and ensure a shortcut to **Bing Wallpaper** exists there.
+
+### Upgrade / Update behavior
+
+*   From tray or Settings, choose **Check for Updates**.
+*   If a new version is available and you choose install, the app downloads installer to `%TEMP%\BingWallpaper\updates`.
+*   The app launches the installer and exits itself to avoid file lock issues during upgrade.
+
+### Uninstall behavior
+
+*   The app registers in Windows Installed Apps for normal uninstall flow.
+*   Uninstall removes app files, startup/start menu/desktop shortcuts, and installed-apps registry entry.
+*   If a file is briefly locked, delayed cleanup is scheduled automatically.
+
+Phase 4 Verification Checklist
+-----------------------------
+
+After building and installing, verify the following:
+
+*   **DPI / UI:** Open Settings and Preview on high DPI scaling (125%/150%+). Windows should be crisp and usable.
+*   **Keyboard:** In Preview window, test: `Esc` (hide), `Ctrl+R` or `F5` (Check Now), `Ctrl+,` (open Settings).
+*   **Updater:** Use **Check for Updates** from tray or Settings. If a newer release exists, choose automatic download/install.
+*   **Metadata:** In Explorer, open EXE Properties -> Details and confirm Product/File version fields are populated.
+*   **Signing (if configured):** In EXE Properties -> Digital Signatures, verify signature and timestamp are present.

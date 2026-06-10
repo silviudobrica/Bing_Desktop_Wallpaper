@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: version-metadata-sync
+        name: Ensure version metadata is synced
+        entry: python check_version_sync.py
+        language: system
+        pass_filenames: false
+      - id: python-syntax-check
+        name: Compile core Python files
+        entry: python -m py_compile bing_daily_wallpaper.py installer.py generate_version_info.py check_version_sync.py
+        language: system
+        pass_filenames: false
+      - id: smoke-check
+        name: Run packaging smoke checks
+        entry: python smoke_check.py
+        language: system
+        pass_filenames: false

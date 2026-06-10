@@ -8,6 +8,9 @@ import time
 import threading
 import logging
 import json
+import subprocess
+import webbrowser
+import tempfile
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from requests.adapters import HTTPAdapter
@@ -16,7 +19,7 @@ from PIL import Image, ImageTk, UnidentifiedImageError
 import pystray
 from pystray import MenuItem as item
 import tkinter as tk
-from tkinter import ttk, simpledialog
+from tkinter import ttk, simpledialog, messagebox
 import winreg
 import re
 
@@ -37,10 +40,11 @@ SPIF_SENDWININICHANGE = 0x02
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.3"
+    VERSION = "1.3.5"
 
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
+RELEASES_API = "https://api.github.com/repos/SilviuDobrica/Bing_Desktop_Wallpaper/releases/latest"
 APP_NAME = "BingWallpaper"
 
 # Paths
@@ -48,6 +52,7 @@ DATA_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / APP_NAME
 LOG_DIR = DATA_DIR / "logs"
 CONFIG_FILE = DATA_DIR / "config.json"
 IMAGE_DIR = Path(os.environ["USERPROFILE"]) / "Pictures" / "Bing"
+STARTUP_SHORTCUT = Path(os.getenv("APPDATA")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Bing Wallpaper.lnk"
 
 # Ensure directories exist
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -89,6 +94,15 @@ class BingTrayApp:
         self.current_image_path = None
         self.running = True
         self.session = self._create_retry_session()
+        self.last_success = 0
+        self.last_error = "None"
+        self.last_error_time = 0
+        self.last_status_message = "Waiting for first check"
+        self.status_vars = {}
+        self.last_update_check = 0
+        self.latest_release_url = None
+        self.latest_release_version = None
+        self.update_in_progress = False
         
         self.config = self.load_config()
         interval_minutes = self.config.get("check_interval_minutes", 720)
@@ -106,6 +120,26 @@ class BingTrayApp:
         session.mount('https://', HTTPAdapter(max_retries=retries))
         return session
 
+    def enable_high_dpi(self):
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            log_msg("High-DPI mode enabled (Per-Monitor aware).")
+            return
+        except Exception:
+            pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+            log_msg("High-DPI mode enabled (System aware).")
+        except Exception:
+            log_msg("High-DPI mode unavailable on this system.")
+
+    def bind_window_shortcuts(self, window):
+        window.bind('<Escape>', lambda e: window.withdraw() if window == self.root else window.destroy())
+        window.bind('<Control-r>', lambda e: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start())
+        window.bind('<Control-R>', lambda e: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start())
+        window.bind('<Control-comma>', lambda e: self.show_settings_window())
+        window.bind('<F5>', lambda e: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start())
+
     def load_config(self):
         try:
             if CONFIG_FILE.exists():
@@ -121,6 +155,240 @@ class BingTrayApp:
                 json.dump(self.config, f, indent=2)
         except Exception as e:
             log_msg(f"Error saving config: {e}", "error")
+
+    def format_ts(self, timestamp):
+        if not timestamp:
+            return "Never"
+        return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+    def version_tuple(self, version):
+        clean = str(version).strip().lower().lstrip("v")
+        parts = []
+        for chunk in clean.split('.'):
+            digits = ''.join(ch for ch in chunk if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts[:3])
+
+    def is_newer_version(self, candidate):
+        return self.version_tuple(candidate) > self.version_tuple(VERSION)
+
+    def notify_user(self, title, message):
+        try:
+            if self.icon:
+                self.icon.notify(message, title)
+        except Exception:
+            pass
+        log_msg(f"{title}: {message}")
+
+    def update_status_panel(self):
+        if not self.status_vars:
+            return
+        interval_minutes = self.config.get("check_interval_minutes", 720)
+        self.status_vars["last_check"].set(self.format_ts(self.last_check))
+        self.status_vars["last_success"].set(self.format_ts(self.last_success))
+        self.status_vars["last_error"].set(f"{self.format_ts(self.last_error_time)} - {self.last_error}" if self.last_error_time else self.last_error)
+        self.status_vars["current_image"].set(self.current_image_path.name if self.current_image_path else "None")
+        self.status_vars["interval"].set(f"{interval_minutes} minutes" if interval_minutes > 0 else "Disabled")
+        self.status_vars["startup"].set("Enabled" if self.is_startup_enabled() else "Disabled")
+        self.status_vars["status"].set(self.last_status_message)
+
+    def record_error(self, message):
+        previous = self.last_error
+        self.last_error = message
+        self.last_error_time = time.time()
+        self.last_status_message = "Last operation failed"
+        self.update_status_panel()
+        if message != previous:
+            self.notify_user("Bing Wallpaper", f"Operation failed: {message}")
+
+    def get_latest_release_info(self):
+        try:
+            headers = {
+                "Accept": "application/vnd.github+json",
+                "User-Agent": f"{APP_NAME}/{VERSION}"
+            }
+            resp = self.session.get(RELEASES_API, timeout=10, proxies=self.get_proxy_dict(), headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            tag_name = data.get("tag_name", "")
+            html_url = data.get("html_url", "")
+            assets = data.get("assets", [])
+            installer_url = html_url
+            installer_name = ""
+            for asset in assets:
+                name = str(asset.get("name", "")).lower()
+                if name.endswith("installbingwallpaper.exe"):
+                    installer_url = asset.get("browser_download_url", html_url)
+                    installer_name = str(asset.get("name", "InstallBingWallpaper.exe"))
+                    break
+            if not tag_name:
+                return None
+            return {
+                "version": str(tag_name).lstrip("v"),
+                "url": installer_url or html_url,
+                "html_url": html_url,
+                "installer_name": installer_name or "InstallBingWallpaper.exe",
+            }
+        except Exception as e:
+            log_msg(f"Update check failed: {e}", "error")
+            return None
+
+    def download_update_installer(self, info):
+        url = info.get("url", "")
+        if not url or not url.lower().endswith(".exe"):
+            return None
+
+        installer_name = info.get("installer_name", "InstallBingWallpaper.exe")
+        temp_dir = Path(tempfile.gettempdir()) / APP_NAME / "updates"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        target = temp_dir / installer_name
+        temp_target = target.with_suffix(".download")
+
+        headers = {
+            "User-Agent": f"{APP_NAME}/{VERSION}"
+        }
+        resp = self.session.get(url, timeout=90, proxies=self.get_proxy_dict(), headers=headers, stream=True)
+        resp.raise_for_status()
+
+        with open(temp_target, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        os.replace(temp_target, target)
+        return target
+
+    def launch_installer_and_exit(self, installer_path):
+        subprocess.Popen([str(installer_path)], cwd=str(installer_path.parent))
+        self.notify_user("Bing Wallpaper", "Launching updater and closing app.")
+        self.running = False
+        if self.icon:
+            self.icon.stop()
+        if self.root:
+            self.root.after(200, self.root.quit)
+
+    def perform_update_install(self, info):
+        if self.update_in_progress:
+            return
+        self.update_in_progress = True
+        try:
+            self.last_status_message = f"Downloading update v{info['version']}..."
+            self.update_status_panel()
+
+            installer_path = self.download_update_installer(info)
+            if not installer_path:
+                if self.root:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Update",
+                        "Installer asset was not found in the release. Opening release page instead."
+                    ))
+                webbrowser.open(info.get("html_url") or info.get("url"))
+                return
+
+            self.last_status_message = f"Downloaded update installer: {installer_path.name}"
+            self.update_status_panel()
+
+            if self.root:
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Update",
+                    "The updater will now start. The app will close to complete the upgrade."
+                ))
+                self.root.after(300, lambda: self.launch_installer_and_exit(installer_path))
+            else:
+                self.launch_installer_and_exit(installer_path)
+        except Exception as e:
+            self.record_error(f"Update install failed: {e}")
+            if self.root:
+                self.root.after(0, lambda: messagebox.showerror("Update", f"Failed to install update: {e}"))
+        finally:
+            self.update_in_progress = False
+
+    def check_for_updates(self, manual=False):
+        info = self.get_latest_release_info()
+        self.last_update_check = time.time()
+
+        if not info:
+            if manual:
+                if self.root:
+                    self.root.after(0, lambda: messagebox.showwarning("Update Check", "Unable to fetch release information."))
+                self.notify_user("Bing Wallpaper", "Unable to check for updates right now.")
+            return
+
+        self.latest_release_version = info["version"]
+        self.latest_release_url = info["url"]
+
+        if self.is_newer_version(info["version"]):
+            self.last_status_message = f"Update available: v{info['version']}"
+            self.update_status_panel()
+            self.notify_user("Bing Wallpaper", f"Update available: v{info['version']}")
+            if manual and self.root:
+                def ask_install():
+                    install_now = messagebox.askyesno(
+                        "Update Available",
+                        f"A new version (v{info['version']}) is available.\nDownload and install now?"
+                    )
+                    if install_now:
+                        threading.Thread(target=self.perform_update_install, args=(info,), daemon=True).start()
+                    else:
+                        open_page = messagebox.askyesno(
+                            "Update",
+                            "Open the release page in your browser instead?"
+                        )
+                        if open_page:
+                            webbrowser.open(info["html_url"])
+                self.root.after(0, ask_install)
+        elif manual:
+            self.last_status_message = f"Up to date: v{VERSION}"
+            self.update_status_panel()
+            if self.root:
+                self.root.after(0, lambda: messagebox.showinfo("Update Check", f"You are up to date (v{VERSION})."))
+
+    def is_startup_enabled(self):
+        return STARTUP_SHORTCUT.exists()
+
+    def set_startup_enabled(self, enabled):
+        try:
+            if enabled:
+                target = Path(sys.executable) if getattr(sys, 'frozen', False) else Path(sys.executable)
+                startup_dir = STARTUP_SHORTCUT.parent
+                startup_dir.mkdir(parents=True, exist_ok=True)
+
+                args = ""
+                if not getattr(sys, 'frozen', False):
+                    args = f'"{str(Path(__file__).resolve())}"'
+
+                ps_script = f"""
+                $ws = New-Object -ComObject WScript.Shell
+                $s = $ws.CreateShortcut('{str(STARTUP_SHORTCUT)}')
+                $s.TargetPath = '{str(target)}'
+                $s.WorkingDirectory = '{str(DATA_DIR)}'
+                $s.Arguments = '{args}'
+                $s.Save()
+                """
+                subprocess.run(["powershell", "-Command", ps_script], check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                if STARTUP_SHORTCUT.exists():
+                    STARTUP_SHORTCUT.unlink()
+        except Exception as e:
+            self.record_error(f"Startup toggle failed: {e}")
+
+    def open_path(self, path):
+        try:
+            os.startfile(path)
+        except Exception as e:
+            self.record_error(f"Unable to open path: {e}")
+
+    def detect_proxy_values(self):
+        pac_url = self.get_pac_url_from_registry()
+        if not pac_url:
+            return "", ""
+        proxy = self.get_proxy_from_pac(pac_url)
+        if not proxy:
+            return "", ""
+        host, port = self.parse_proxy_string(proxy)
+        return host or "", port or ""
 
     def set_interval(self, minutes, label):
         try:
@@ -159,6 +427,107 @@ class BingTrayApp:
         
         if result:
             self.set_interval(result, f"Custom ({result} min)")
+
+    def show_settings_window(self):
+        if not self.root:
+            self.create_root()
+
+        # Ensure the root window is visible so modal dialogs are not hidden.
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+        settings_win = tk.Toplevel(self.root)
+        settings_win.title("Settings")
+        settings_win.geometry("460x420")
+        settings_win.resizable(False, False)
+        settings_win.transient(self.root)
+        settings_win.grab_set()
+        settings_win.bind('<Escape>', lambda e: settings_win.destroy())
+
+        frame = ttk.Frame(settings_win, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Check Interval", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        labels = list(INTERVAL_PRESETS.keys())
+        interval_var = tk.StringVar(value="12 Hours")
+        curr_interval = self.config.get("check_interval_minutes", 720)
+        for label, minutes in INTERVAL_PRESETS.items():
+            if minutes == curr_interval:
+                interval_var.set(label)
+                break
+
+        interval_combo = ttk.Combobox(frame, textvariable=interval_var, values=labels, state="readonly", width=22)
+        interval_combo.grid(row=1, column=0, sticky="w")
+
+        ttk.Label(frame, text="Custom minutes (optional)").grid(row=1, column=1, sticky="w", padx=(12, 0))
+        custom_interval_var = tk.StringVar(value="" if curr_interval in INTERVAL_PRESETS.values() else str(curr_interval))
+        ttk.Entry(frame, textvariable=custom_interval_var, width=10).grid(row=1, column=2, sticky="w")
+
+        ttk.Separator(frame).grid(row=2, column=0, columnspan=3, sticky="ew", pady=12)
+
+        ttk.Label(frame, text="Proxy", font=("Segoe UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(frame, text="Host").grid(row=4, column=0, sticky="w")
+        proxy_host_var = tk.StringVar(value=self.config.get("proxy_url", ""))
+        ttk.Entry(frame, textvariable=proxy_host_var, width=28).grid(row=4, column=1, columnspan=2, sticky="w")
+        ttk.Label(frame, text="Port").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        proxy_port_var = tk.StringVar(value=self.config.get("proxy_port", ""))
+        ttk.Entry(frame, textvariable=proxy_port_var, width=10).grid(row=5, column=1, sticky="w", pady=(6, 0))
+
+        def auto_detect_proxy():
+            host, port = self.detect_proxy_values()
+            if host:
+                proxy_host_var.set(host)
+                proxy_port_var.set(port)
+            else:
+                messagebox.showinfo("Proxy Detection", "No proxy detected from system settings.")
+
+        ttk.Button(frame, text="Auto-Detect Proxy", command=auto_detect_proxy).grid(row=5, column=2, sticky="w", pady=(6, 0))
+
+        ttk.Separator(frame).grid(row=6, column=0, columnspan=3, sticky="ew", pady=12)
+
+        startup_var = tk.BooleanVar(value=self.is_startup_enabled())
+        ttk.Checkbutton(frame, text="Run at Startup", variable=startup_var).grid(row=7, column=0, columnspan=3, sticky="w")
+
+        actions = ttk.Frame(frame)
+        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(14, 8))
+        ttk.Button(actions, text="Open Wallpaper Folder", command=lambda: self.open_path(IMAGE_DIR)).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(actions, text="Open Logs", command=lambda: self.open_path(LOG_DIR)).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="Check for Updates",
+            command=lambda: threading.Thread(target=self.check_for_updates, args=(True,), daemon=True).start()
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        def save_settings():
+            try:
+                custom_raw = custom_interval_var.get().strip()
+                if custom_raw:
+                    custom_minutes = int(custom_raw)
+                    if custom_minutes <= 0:
+                        raise ValueError("Custom interval must be positive")
+                    self.set_interval(custom_minutes, f"Custom ({custom_minutes} min)")
+                else:
+                    selected = interval_var.get()
+                    minutes = INTERVAL_PRESETS[selected]
+                    self.set_interval(minutes, selected)
+
+                self.config["proxy_url"] = proxy_host_var.get().strip()
+                self.config["proxy_port"] = proxy_port_var.get().strip()
+                self.save_config()
+                self.set_startup_enabled(startup_var.get())
+
+                self.last_status_message = "Settings saved"
+                self.update_status_panel()
+                settings_win.destroy()
+            except Exception as e:
+                messagebox.showerror("Settings", f"Unable to save settings: {e}")
+
+        btn_row = ttk.Frame(frame)
+        btn_row.grid(row=9, column=0, columnspan=3, sticky="e")
+        ttk.Button(btn_row, text="Cancel", command=settings_win.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btn_row, text="Save", command=save_settings).pack(side=tk.RIGHT, padx=(0, 8))
+        settings_win.bind('<Return>', lambda e: save_settings())
 
     def get_proxy_dict(self):
         url = self.config.get("proxy_url", "").strip()
@@ -278,24 +647,38 @@ class BingTrayApp:
             except Exception: pass
 
     def check_and_update(self, force=False):
+        self.last_check = time.time()
         try:
             info = self.get_bing_image_info()
-            if info:
-                url, date_str = info
-                path = self.download_image(url, date_str)
-                if path:
-                    if force or self.current_image_path != path:
-                        self.set_wallpaper(path)
-                    elif self.icon and self.icon.icon is None:
-                        self.update_tray_icon(path)
+            if not info:
+                self.record_error("No image info returned from Bing API")
+                return
+
+            url, date_str = info
+            path = self.download_image(url, date_str)
+            if not path:
+                self.record_error("Image download failed")
+                return
+
+            if force or self.current_image_path != path:
+                self.set_wallpaper(path)
+                self.last_status_message = f"Wallpaper updated: {path.name}"
+                self.notify_user("Bing Wallpaper", f"Wallpaper updated: {path.name}")
+            elif self.icon and self.icon.icon is None:
+                self.update_tray_icon(path)
+                self.last_status_message = f"Wallpaper available: {path.name}"
+
+            self.last_success = time.time()
+            self.last_error = "None"
+            self.last_error_time = 0
             
             if self.root and self.root.winfo_viewable():
                 self.root.after(0, lambda: self.setup_ui(self.root))
+            self.update_status_panel()
                 
         except Exception as e:
             log_msg(f"Update Loop Error: {e}", "error")
-        
-        self.last_check = time.time()
+            self.record_error(str(e))
 
     def background_loop(self):
         while self.running:
@@ -304,6 +687,10 @@ class BingTrayApp:
                     elapsed = time.time() - self.last_check
                     if elapsed > self.check_interval:
                         self.check_and_update(force=False)
+
+                # Auto-check updates once every 24 hours.
+                if (time.time() - self.last_update_check) > 86400:
+                    self.check_for_updates(manual=False)
                 time.sleep(5)
             except Exception:
                 time.sleep(60)
@@ -333,7 +720,9 @@ class BingTrayApp:
 
         return pystray.Menu(
             item('Preview / Gallery', self.on_open_preview, default=True),
+            item('Settings', self.on_open_settings),
             item('Check Now', lambda i, it: threading.Thread(target=self.check_and_update, args=(True,)).start()),
+            item('Check for Updates', lambda i, it: threading.Thread(target=self.check_for_updates, args=(True,), daemon=True).start()),
             pystray.Menu.SEPARATOR,
             item('Interval', pystray.Menu(*sub_items)),
             pystray.Menu.SEPARATOR,
@@ -341,7 +730,14 @@ class BingTrayApp:
         )
 
     def on_open_preview(self, icon, item):
-        if self.root: self.root.after(0, self.show_preview_window)
+        if not self.root:
+            self.create_root()
+        self.root.after(0, self.show_preview_window)
+
+    def on_open_settings(self, icon, item):
+        if not self.root:
+            self.create_root()
+        self.root.after(0, self.show_settings_window)
 
     def on_exit(self, icon, item):
         self.running = False
@@ -355,10 +751,13 @@ class BingTrayApp:
         self.setup_ui(self.root)
 
     def create_root(self):
+        self.enable_high_dpi()
         self.root = tk.Tk()
         self.root.title(f"Bing Wallpaper v{VERSION}")
         self.root.geometry("800x600")
+        self.root.minsize(680, 520)
         self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)
+        self.bind_window_shortcuts(self.root)
         self.setup_ui(self.root)
 
     # --- PREVIEW UI WITH THUMBNAILS RESTORED ---
@@ -368,6 +767,40 @@ class BingTrayApp:
         # Main Container
         main_frame = tk.Frame(win)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Header Actions
+        actions_frame = tk.Frame(main_frame)
+        actions_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 8))
+        ttk.Button(actions_frame, text="Check Now", command=lambda: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start()).pack(side=tk.LEFT)
+        ttk.Button(actions_frame, text="Settings", command=self.show_settings_window).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(actions_frame, text="Open Logs", command=lambda: self.open_path(LOG_DIR)).pack(side=tk.LEFT, padx=(6, 0))
+
+        # Status Panel
+        status_frame = ttk.LabelFrame(main_frame, text="Status", padding=8)
+        status_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        self.status_vars = {
+            "status": tk.StringVar(),
+            "last_check": tk.StringVar(),
+            "last_success": tk.StringVar(),
+            "last_error": tk.StringVar(),
+            "current_image": tk.StringVar(),
+            "interval": tk.StringVar(),
+            "startup": tk.StringVar(),
+        }
+
+        status_rows = [
+            ("State", "status"),
+            ("Last Check", "last_check"),
+            ("Last Success", "last_success"),
+            ("Last Error", "last_error"),
+            ("Current Image", "current_image"),
+            ("Interval", "interval"),
+            ("Startup", "startup"),
+        ]
+        for idx, (label, key) in enumerate(status_rows):
+            ttk.Label(status_frame, text=f"{label}:", width=14).grid(row=idx, column=0, sticky="w", pady=1)
+            ttk.Label(status_frame, textvariable=self.status_vars[key]).grid(row=idx, column=1, sticky="w", pady=1)
+        self.update_status_panel()
 
         # 1. Main Preview Area
         preview_frame = tk.Frame(main_frame)

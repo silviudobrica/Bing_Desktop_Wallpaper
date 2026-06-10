@@ -10,15 +10,107 @@ import urllib.request
 import re
 import json
 import subprocess
+import time
+import tempfile
+import stat
 
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.3"
+    VERSION = "1.3.5"
 
 APP_NAME = "BingWallpaper"
+PUBLISHER = "Silviu Dobrica"
 # Default Path: C:\Users\<User>\AppData\Local\Programs\BingWallpaper
 INSTALL_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / APP_NAME
+UNINSTALL_REG_PATH = fr"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP_NAME}"
+
+
+def remove_shortcuts(log_fn=print):
+    startup = Path(os.getenv("APPDATA")) / "Microsoft/Windows/Start Menu/Programs/Startup/Bing Wallpaper.lnk"
+    start_menu = Path(os.getenv("APPDATA")) / "Microsoft/Windows/Start Menu/Programs/Bing Wallpaper/Bing Wallpaper.lnk"
+    # Legacy cleanup path in case a shortcut was created under Desktop\Programs.
+    desktop_legacy = Path(os.environ["USERPROFILE"]) / "Desktop" / "Programs" / "Bing Wallpaper.lnk"
+    desktop = Path(os.environ["USERPROFILE"]) / "Desktop" / "Bing Wallpaper.lnk"
+
+    for link in [startup, start_menu, desktop_legacy, desktop]:
+        try:
+            if link.exists():
+                link.unlink()
+                log_fn(f"Removed shortcut: {link}")
+        except Exception as e:
+            log_fn(f"Shortcut cleanup warning ({link}): {e}")
+
+    for folder in [start_menu.parent, desktop_legacy.parent]:
+        try:
+            if folder.exists() and not any(folder.iterdir()):
+                folder.rmdir()
+        except Exception:
+            pass
+
+
+def relaunch_uninstall_worker_if_needed(log_fn=print):
+    """If running from INSTALL_DIR, relaunch uninstall from temp so install dir can be deleted."""
+    if not getattr(sys, 'frozen', False):
+        return False
+
+    current_exe = Path(sys.executable).resolve()
+    if current_exe.parent != INSTALL_DIR:
+        return False
+
+    try:
+        temp_worker_dir = Path(tempfile.gettempdir()) / APP_NAME
+        temp_worker_dir.mkdir(parents=True, exist_ok=True)
+        worker_exe = temp_worker_dir / "UninstallBingWallpaper.exe"
+
+        shutil.copy2(current_exe, worker_exe)
+        subprocess.Popen(
+            [str(worker_exe), "--uninstall", "--worker"],
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        log_fn(f"Relaunching uninstaller worker: {worker_exe}")
+        return True
+    except Exception as e:
+        log_fn(f"Failed to relaunch uninstall worker: {e}")
+        return False
+
+
+def _rmtree_onerror(log_fn, func, path, exc_info):
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception as e:
+        log_fn(f"Failed to remove locked path {path}: {e}")
+
+
+def remove_install_dir(log_fn=print):
+    if not INSTALL_DIR.exists():
+        return True
+
+    try:
+        # Avoid holding a handle in the folder we are trying to remove.
+        os.chdir(tempfile.gettempdir())
+    except Exception:
+        pass
+
+    for attempt in range(1, 6):
+        try:
+            shutil.rmtree(INSTALL_DIR, onerror=lambda f, p, e: _rmtree_onerror(log_fn, f, p, e))
+            if not INSTALL_DIR.exists():
+                return True
+        except Exception as e:
+            log_fn(f"Install folder delete attempt {attempt} failed: {e}")
+        time.sleep(0.5)
+
+    # Last resort: spawn detached delayed cleanup after this process exits.
+    try:
+        cmd = f'cmd /c timeout /t 2 /nobreak >nul & rmdir /s /q "{str(INSTALL_DIR)}"'
+        subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
+        log_fn("Scheduled delayed cleanup for install folder.")
+    except Exception as e:
+        log_fn(f"Failed to schedule delayed cleanup: {e}")
+
+    return not INSTALL_DIR.exists()
 
 class SimpleInstaller(tk.Tk):
     def __init__(self):
@@ -47,6 +139,9 @@ class SimpleInstaller(tk.Tk):
         
         self.desktop_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(opts_frame, text="Create Desktop Shortcut", variable=self.desktop_var).pack(anchor="w")
+
+        self.start_menu_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opts_frame, text="Create Start Menu Shortcut", variable=self.start_menu_var).pack(anchor="w")
         
         # Network
         proxy_frame = ttk.LabelFrame(self, text="Network / Proxy (Optional)", padding=10)
@@ -143,6 +238,7 @@ class SimpleInstaller(tk.Tk):
         self.log(f"Target: {INSTALL_DIR}")
         
         try:
+            self.stop_running_app()
             INSTALL_DIR.mkdir(parents=True, exist_ok=True)
             
             # 1. Source Detection
@@ -162,7 +258,12 @@ class SimpleInstaller(tk.Tk):
             # 2. File Copy
             dst_exe = INSTALL_DIR / "BingWallpaper.exe"
             self.log(f"Copying to {dst_exe}...")
-            shutil.copy2(src_exe, dst_exe)
+            self.copy_with_retries(src_exe, dst_exe)
+
+            uninstall_exe = None
+            if getattr(sys, 'frozen', False):
+                uninstall_exe = INSTALL_DIR / "UninstallBingWallpaper.exe"
+                shutil.copy2(Path(sys.executable), uninstall_exe)
             
             if not dst_exe.exists():
                 raise Exception("Copy failed - File not found at destination.")
@@ -181,9 +282,14 @@ class SimpleInstaller(tk.Tk):
             # 4. Shortcuts (Using subprocess for safety)
             if self.desktop_var.get():
                 self.create_shortcut(dst_exe, "Bing Wallpaper", "Desktop")
+
+            if self.start_menu_var.get():
+                self.create_shortcut(dst_exe, "Bing Wallpaper", "StartMenu")
             
             if self.startup_var.get():
                 self.create_shortcut(dst_exe, "Bing Wallpaper", "Startup")
+
+            self.register_uninstall_entry(uninstall_exe)
             
             # 5. Success State
             self.log("Installation Successful!")
@@ -199,10 +305,40 @@ class SimpleInstaller(tk.Tk):
             messagebox.showerror("Error", f"Install failed: {str(e)}")
             self.log(f"Error: {str(e)}")
 
+    def copy_with_retries(self, src_exe, dst_exe, retries=8, delay=0.5):
+        last_error = None
+        temp_target = dst_exe.with_suffix(".new")
+
+        for attempt in range(1, retries + 1):
+            try:
+                if temp_target.exists():
+                    temp_target.unlink()
+                shutil.copy2(src_exe, temp_target)
+                os.replace(temp_target, dst_exe)
+                return
+            except PermissionError as e:
+                last_error = e
+                self.log(f"File is locked (attempt {attempt}/{retries}). Retrying...")
+                self.stop_running_app()
+                time.sleep(delay)
+            except Exception as e:
+                last_error = e
+                break
+
+        if temp_target.exists():
+            try:
+                temp_target.unlink()
+            except Exception:
+                pass
+
+        raise Exception(f"Unable to replace app executable after {retries} attempts: {last_error}")
+
     def create_shortcut(self, target, name, folder):
         try:
             if folder == "Startup":
                 link_dir = Path(os.getenv("APPDATA")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+            elif folder == "StartMenu":
+                link_dir = Path(os.getenv("APPDATA")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Bing Wallpaper"
             else:
                 link_dir = Path(os.environ["USERPROFILE"]) / "Desktop"
             
@@ -225,17 +361,91 @@ class SimpleInstaller(tk.Tk):
         except Exception as e:
             self.log(f"Shortcut Error ({folder}): {e}")
 
+    def register_uninstall_entry(self, uninstall_exe):
+        try:
+            if uninstall_exe and uninstall_exe.exists():
+                uninstall_cmd = f'"{str(uninstall_exe)}" --uninstall'
+                icon_path = str(INSTALL_DIR / "BingWallpaper.exe")
+            elif getattr(sys, 'frozen', False):
+                uninstall_cmd = f'"{str(Path(sys.executable))}" --uninstall'
+                icon_path = str(INSTALL_DIR / "BingWallpaper.exe")
+            else:
+                script_path = Path(__file__).resolve()
+                uninstall_cmd = f'"{sys.executable}" "{str(script_path)}" --uninstall'
+                icon_path = str(script_path)
+
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, UNINSTALL_REG_PATH)
+            with key:
+                winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Bing Wallpaper")
+                winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, VERSION)
+                winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, PUBLISHER)
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(INSTALL_DIR))
+                winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstall_cmd)
+                winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, icon_path)
+                winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+
+                app_exe = INSTALL_DIR / "BingWallpaper.exe"
+                if app_exe.exists():
+                    winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, max(1, app_exe.stat().st_size // 1024))
+            self.log("Registered app in Windows Installed Apps.")
+        except Exception as e:
+            self.log(f"Uninstall registration error: {e}")
+
+    def remove_uninstall_entry(self):
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, UNINSTALL_REG_PATH)
+            self.log("Removed Installed Apps registration.")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self.log(f"Uninstall registry cleanup error: {e}")
+
+    def stop_running_app(self):
+        try:
+            # Try graceful stop first.
+            subprocess.run(
+                ["taskkill", "/IM", "BingWallpaper.exe"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False
+            )
+
+            for _ in range(10):
+                check = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq BingWallpaper.exe"],
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    check=False
+                )
+                if "BingWallpaper.exe" not in check.stdout:
+                    return
+                time.sleep(0.2)
+
+            # Fall back to force kill if still running.
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "BingWallpaper.exe"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False
+            )
+        except Exception as e:
+            self.log(f"Process stop warning: {e}")
+
     def uninstall(self):
         try:
-            os.system('taskkill /F /IM "BingWallpaper.exe" >nul 2>&1')
-            if INSTALL_DIR.exists():
-                shutil.rmtree(INSTALL_DIR)
-            
-            startup = Path(os.getenv("APPDATA")) / "Microsoft/Windows/Start Menu/Programs/Startup/Bing Wallpaper.lnk"
-            desktop = Path(os.environ["USERPROFILE"]) / "Desktop" / "Bing Wallpaper.lnk"
-            
-            if startup.exists(): startup.unlink()
-            if desktop.exists(): desktop.unlink()
+            self.stop_running_app()
+
+            remove_shortcuts(self.log)
+
+            self.remove_uninstall_entry()
+
+            removed = remove_install_dir(self.log)
+            if not removed:
+                self.log("Install folder cleanup is pending.")
                 
             self.log("Uninstalled.")
             self.btn_open.config(state=tk.DISABLED)
@@ -248,5 +458,29 @@ class SimpleInstaller(tk.Tk):
             os.startfile(INSTALL_DIR)
 
 if __name__ == "__main__":
+    if "--uninstall" in sys.argv:
+        class _HeadlessInstaller:
+            def log(self, msg):
+                print(msg)
+
+            stop_running_app = SimpleInstaller.stop_running_app
+            remove_uninstall_entry = SimpleInstaller.remove_uninstall_entry
+
+        headless = _HeadlessInstaller()
+        try:
+            if "--worker" not in sys.argv and relaunch_uninstall_worker_if_needed(headless.log):
+                sys.exit(0)
+
+            headless.stop_running_app()
+
+            remove_shortcuts(headless.log)
+
+            headless.remove_uninstall_entry()
+
+            remove_install_dir(headless.log)
+        except Exception as e:
+            print(f"Uninstall failed: {e}")
+        sys.exit(0)
+
     app = SimpleInstaller()
     app.mainloop()
