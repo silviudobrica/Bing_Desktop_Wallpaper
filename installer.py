@@ -17,7 +17,7 @@ import stat
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.5"
+    VERSION = "1.3.6"
 
 APP_NAME = "BingWallpaper"
 PUBLISHER = "Silviu Dobrica"

@@ -40,7 +40,7 @@ SPIF_SENDWININICHANGE = 0x02
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.5"
+    VERSION = "1.3.6"
 
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
@@ -219,9 +219,11 @@ class BingTrayApp:
             installer_name = ""
             for asset in assets:
                 name = str(asset.get("name", "")).lower()
-                if name.endswith("installbingwallpaper.exe"):
+                # Accept common naming variants, e.g. InstallBingWallpaper.exe or InstallBingWallpaper-1.3.5.exe.
+                if name.endswith(".exe") and ("installbingwallpaper" in name or "bingwallpaper" in name):
                     installer_url = asset.get("browser_download_url", html_url)
                     installer_name = str(asset.get("name", "InstallBingWallpaper.exe"))
+                    log_msg(f"Selected installer asset: {installer_name}")
                     break
             if not tag_name:
                 return None
@@ -238,6 +240,7 @@ class BingTrayApp:
     def download_update_installer(self, info):
         url = info.get("url", "")
         if not url or not url.lower().endswith(".exe"):
+            log_msg(f"No direct installer URL in release metadata: {url}")
             return None
 
         installer_name = info.get("installer_name", "InstallBingWallpaper.exe")
@@ -245,6 +248,7 @@ class BingTrayApp:
         temp_dir.mkdir(parents=True, exist_ok=True)
         target = temp_dir / installer_name
         temp_target = target.with_suffix(".download")
+        log_msg(f"Downloading installer from {url} to {target}")
 
         headers = {
             "User-Agent": f"{APP_NAME}/{VERSION}"
@@ -258,6 +262,7 @@ class BingTrayApp:
                     f.write(chunk)
 
         os.replace(temp_target, target)
+        log_msg(f"Installer downloaded successfully: {target}")
         return target
 
     def launch_installer_and_exit(self, installer_path):
@@ -342,8 +347,19 @@ class BingTrayApp:
         elif manual:
             self.last_status_message = f"Up to date: v{VERSION}"
             self.update_status_panel()
+            log_msg(f"No newer version found. Current={VERSION}, Latest={info['version']}")
             if self.root:
-                self.root.after(0, lambda: messagebox.showinfo("Update Check", f"You are up to date (v{VERSION})."))
+                def ask_repair_download():
+                    download_anyway = messagebox.askyesno(
+                        "Update Check",
+                        f"You are up to date (v{VERSION}).\n\nDo you want to download and run the installer anyway for repair/reinstall?"
+                    )
+                    if download_anyway:
+                        threading.Thread(target=self.perform_update_install, args=(info,), daemon=True).start()
+                self.root.after(0, ask_repair_download)
+        else:
+            self.last_status_message = f"Up to date: v{VERSION}"
+            self.update_status_panel()
 
     def is_startup_enabled(self):
         return STARTUP_SHORTCUT.exists()
