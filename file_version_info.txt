@@ -3,8 +3,8 @@
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 3, 6, 0),
-    prodvers=(1, 3, 6, 0),
+    filevers=(1, 3, 7, 0),
+    prodvers=(1, 3, 7, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -19,12 +19,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Silviu Dobrica'),
           StringStruct('FileDescription', 'Bing Daily Wallpaper Tray App'),
-          StringStruct('FileVersion', '1.3.6.0'),
+          StringStruct('FileVersion', '1.3.7.0'),
           StringStruct('InternalName', 'BingWallpaper'),
           StringStruct('LegalCopyright', 'Copyright (C) 2026 Silviu Dobrica'),
           StringStruct('OriginalFilename', 'BingWallpaper.exe'),
           StringStruct('ProductName', 'Bing Daily Wallpaper'),
-          StringStruct('ProductVersion', '1.3.6.0')
+          StringStruct('ProductVersion', '1.3.7.0')
         ]
       )
     ]),

@@ -41,7 +41,7 @@ SPIF_SENDWININICHANGE = 0x02
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.6"
+    VERSION = "1.3.7"
 
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
@@ -104,6 +104,8 @@ class BingTrayApp:
         self.latest_release_url = None
         self.latest_release_version = None
         self.update_in_progress = False
+        self._refresh_preview_ui = None
+        self._render_gallery_page = None
         
         self.config = self.load_config()
         interval_minutes = self.config.get("check_interval_minutes", 720)
@@ -512,14 +514,22 @@ class BingTrayApp:
 
         settings_win = tk.Toplevel(self.root)
         settings_win.title("Settings")
-        settings_win.geometry("560x500")
-        settings_win.resizable(False, False)
+        settings_win.geometry("500x390")
+        settings_win.minsize(500, 390)
+        settings_win.resizable(True, True)
         settings_win.transient(self.root)
         settings_win.grab_set()
         settings_win.bind('<Escape>', lambda e: settings_win.destroy())
 
         frame = ttk.Frame(settings_win, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
+        frame.grid(row=0, column=0, sticky="nsew")
+        settings_win.grid_rowconfigure(0, weight=1)
+        settings_win.grid_columnconfigure(0, weight=1)
+
+        frame.grid_columnconfigure(0, weight=0)
+        frame.grid_columnconfigure(1, weight=1)
+        frame.grid_columnconfigure(2, weight=0)
+        frame.grid_rowconfigure(10, weight=1)
 
         ttk.Label(frame, text="Check Interval", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
         labels = list(INTERVAL_PRESETS.keys())
@@ -531,7 +541,7 @@ class BingTrayApp:
                 break
 
         interval_combo = ttk.Combobox(frame, textvariable=interval_var, values=labels, state="readonly", width=22)
-        interval_combo.grid(row=1, column=0, sticky="w")
+        interval_combo.grid(row=1, column=0, sticky="ew")
 
         ttk.Label(frame, text="Custom minutes (optional)").grid(row=1, column=1, sticky="w", padx=(12, 0))
         custom_interval_var = tk.StringVar(value="" if curr_interval in INTERVAL_PRESETS.values() else str(curr_interval))
@@ -542,7 +552,7 @@ class BingTrayApp:
         ttk.Label(frame, text="Proxy", font=("Segoe UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=(0, 6))
         ttk.Label(frame, text="Host").grid(row=4, column=0, sticky="w")
         proxy_host_var = tk.StringVar(value=self.config.get("proxy_url", ""))
-        ttk.Entry(frame, textvariable=proxy_host_var, width=28).grid(row=4, column=1, columnspan=2, sticky="w")
+        ttk.Entry(frame, textvariable=proxy_host_var, width=28).grid(row=4, column=1, columnspan=2, sticky="ew")
         ttk.Label(frame, text="Port").grid(row=5, column=0, sticky="w", pady=(6, 0))
         proxy_port_var = tk.StringVar(value=self.config.get("proxy_port", ""))
         ttk.Entry(frame, textvariable=proxy_port_var, width=10).grid(row=5, column=1, sticky="w", pady=(6, 0))
@@ -559,7 +569,7 @@ class BingTrayApp:
 
         ttk.Label(frame, text="CA Bundle (PEM, optional)").grid(row=6, column=0, sticky="w", pady=(10, 0))
         ca_bundle_var = tk.StringVar(value=self.config.get("ca_bundle_path", ""))
-        ttk.Entry(frame, textvariable=ca_bundle_var, width=50).grid(row=6, column=1, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Entry(frame, textvariable=ca_bundle_var, width=50).grid(row=6, column=1, columnspan=2, sticky="ew", pady=(10, 0))
 
         def browse_ca_bundle():
             selected = filedialog.askopenfilename(
@@ -579,18 +589,22 @@ class BingTrayApp:
 
         actions = ttk.Frame(frame)
         actions.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(14, 8))
-        ttk.Button(actions, text="Open Wallpaper Folder", command=lambda: self.open_path(IMAGE_DIR)).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(actions, text="Open Logs", command=lambda: self.open_path(LOG_DIR)).pack(side=tk.LEFT)
+        actions.grid_columnconfigure(0, weight=1)
+        actions.grid_columnconfigure(1, weight=1)
+        actions.grid_columnconfigure(2, weight=1)
+        actions.grid_columnconfigure(3, weight=1)
+        ttk.Button(actions, text="Open Wallpaper Folder", command=lambda: self.open_path(IMAGE_DIR)).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(actions, text="Open Logs", command=lambda: self.open_path(LOG_DIR)).grid(row=0, column=1, sticky="ew", padx=(0, 6))
         ttk.Button(
             actions,
             text="Test HTTPS",
             command=lambda: threading.Thread(target=self.test_https_connectivity, daemon=True).start()
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        ).grid(row=0, column=2, sticky="ew", padx=(0, 6))
         ttk.Button(
             actions,
             text="Check for Updates",
             command=lambda: threading.Thread(target=self.check_for_updates, args=(True,), daemon=True).start()
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        ).grid(row=0, column=3, sticky="ew")
 
         def save_settings():
             try:
@@ -848,30 +862,48 @@ class BingTrayApp:
         self.enable_high_dpi()
         self.root = tk.Tk()
         self.root.title(f"Bing Wallpaper v{VERSION}")
-        self.root.geometry("800x850")
-        self.root.minsize(680, 650)
+        self.root.geometry("840x760")
+        self.root.minsize(620, 560)
         self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)
         self.bind_window_shortcuts(self.root)
         self.setup_ui(self.root)
 
-    # --- PREVIEW UI WITH THUMBNAILS RESTORED ---
+    def on_thumbnail_click(self, img_path):
+        self.set_wallpaper(img_path)
+        self.last_status_message = f"Wallpaper updated: {img_path.name}"
+        if callable(self._refresh_preview_ui):
+            self._refresh_preview_ui(force_reload=True)
+        self.update_status_panel()
+
+    # --- PREVIEW UI WITH RESPONSIVE LAYOUT ---
     def setup_ui(self, win):
-        for w in win.winfo_children(): w.destroy()
-        
-        # Main Container
-        main_frame = tk.Frame(win)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self._refresh_preview_ui = None
+        self._render_gallery_page = None
+        for w in win.winfo_children():
+            w.destroy()
 
-        # Header Actions
-        actions_frame = tk.Frame(main_frame)
-        actions_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 8))
-        ttk.Button(actions_frame, text="Check Now", command=lambda: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start()).pack(side=tk.LEFT)
-        ttk.Button(actions_frame, text="Settings", command=self.show_settings_window).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(actions_frame, text="Open Logs", command=lambda: self.open_path(LOG_DIR)).pack(side=tk.LEFT, padx=(6, 0))
+        main_frame = ttk.Frame(win, padding=10)
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1)
 
-        # Status Panel
+        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_rowconfigure(0, weight=0)
+        main_frame.grid_rowconfigure(1, weight=0)
+        main_frame.grid_rowconfigure(2, weight=5)
+        main_frame.grid_rowconfigure(3, weight=2)
+
+        actions_frame = ttk.Frame(main_frame)
+        actions_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        actions_frame.grid_columnconfigure(0, weight=1)
+        actions_frame.grid_columnconfigure(1, weight=1)
+        actions_frame.grid_columnconfigure(2, weight=1)
+        ttk.Button(actions_frame, text="Check Now", command=lambda: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start()).grid(row=0, column=0, sticky="ew")
+        ttk.Button(actions_frame, text="Settings", command=self.show_settings_window).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Button(actions_frame, text="Open Logs", command=lambda: self.open_path(LOG_DIR)).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+
         status_frame = ttk.LabelFrame(main_frame, text="Status", padding=8)
-        status_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        status_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         self.status_vars = {
             "status": tk.StringVar(),
             "last_check": tk.StringVar(),
@@ -891,52 +923,296 @@ class BingTrayApp:
             ("Interval", "interval"),
             ("Startup", "startup"),
         ]
+        value_labels = []
         for idx, (label, key) in enumerate(status_rows):
             ttk.Label(status_frame, text=f"{label}:", width=14).grid(row=idx, column=0, sticky="w", pady=1)
-            ttk.Label(status_frame, textvariable=self.status_vars[key]).grid(row=idx, column=1, sticky="w", pady=1)
+            value_label = ttk.Label(status_frame, textvariable=self.status_vars[key], anchor="w")
+            value_label.grid(row=idx, column=1, sticky="ew", pady=1)
+            value_labels.append(value_label)
+        status_frame.grid_columnconfigure(1, weight=1)
         self.update_status_panel()
 
-        # 1. Main Preview Area
-        preview_frame = tk.Frame(main_frame)
-        preview_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
-        if self.current_image_path and self.current_image_path.exists():
-            try:
-                img = Image.open(self.current_image_path)
-                img.thumbnail((780, 400))
-                tk_img = ImageTk.PhotoImage(img)
-                lbl = tk.Label(preview_frame, image=tk_img)
-                lbl.image = tk_img 
-                lbl.pack(pady=5)
-                tk.Label(preview_frame, text=self.current_image_path.name, font=("Segoe UI", 10, "bold")).pack()
-            except Exception:
-                tk.Label(preview_frame, text="Error displaying image").pack()
-        else:
-            tk.Label(preview_frame, text="No wallpaper set.").pack(pady=50)
+        preview_frame = ttk.Frame(main_frame)
+        preview_frame.grid(row=2, column=0, sticky="nsew")
+        preview_frame.grid_rowconfigure(0, weight=1)
+        preview_frame.grid_columnconfigure(0, weight=1)
 
-        # 2. Horizontal Scroll List (Restored)
-        list_frame = tk.Frame(main_frame, height=150)
-        list_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
-        
-        canvas = tk.Canvas(list_frame, height=130)
-        scrollbar = ttk.Scrollbar(list_frame, orient="horizontal", command=canvas.xview)
-        scrollable_frame = tk.Frame(canvas)
+        preview_label = ttk.Label(preview_frame, anchor="center")
+        preview_label.grid(row=0, column=0, sticky="nsew")
+        preview_name_label = ttk.Label(preview_frame, font=("Segoe UI", 10, "bold"), anchor="center")
+        preview_name_label.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        latest_frame = ttk.LabelFrame(main_frame, text="Latest 5", padding=6)
+        latest_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        for col in range(5):
+            latest_frame.grid_columnconfigure(col, weight=1, uniform="latest")
+        latest_frame.grid_rowconfigure(0, weight=1)
+        latest_frame.grid_columnconfigure(5, weight=0)
+        latest_frame.grid_rowconfigure(1, weight=0)
 
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(xscrollcommand=scrollbar.set)
-
-        # Populating images with Thumbnails
         images = sorted(IMAGE_DIR.glob("bing_*.jpg"), key=os.path.getmtime, reverse=True)
-        for img_path in images[:15]: 
-            self.create_thumbnail(scrollable_frame, img_path)
+        gallery_offset = {"value": 0}
+        thumb_slots = []
 
-        canvas.pack(side="top", fill="both", expand=True)
-        scrollbar.pack(side="bottom", fill="x")
+        for idx in range(5):
+            slot = ttk.Frame(latest_frame, padding=2)
+            slot.grid(row=0, column=idx, sticky="nsew", padx=4, pady=2)
+            slot.grid_rowconfigure(0, weight=1)
+            slot.grid_columnconfigure(0, weight=1)
+
+            img_label = ttk.Label(slot, anchor="center", cursor="hand2")
+            img_label.grid(row=0, column=0, sticky="nsew")
+            date_label = ttk.Label(slot, anchor="center", font=("Consolas", 8))
+            date_label.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+            thumb_slots.append((img_label, date_label))
+
+        gallery_scroll = ttk.Scrollbar(latest_frame, orient="horizontal")
+        gallery_scroll.grid(row=1, column=0, columnspan=5, sticky="ew", padx=4, pady=(4, 0))
+        gallery_status_label = ttk.Label(latest_frame, text="", anchor="e")
+        gallery_status_label.grid(row=1, column=5, sticky="e", padx=(8, 2), pady=(4, 0))
+
+        preview_cache = {
+            "path": None,
+            "image": None,
+        }
+        thumb_source_cache = {}
+
+        layout_state = {
+            "thumb_min_height": 60,
+            "thumb_container_min": 120,
+        }
+
+        render_state = {
+            "preview_size": None,
+            "thumb_size": None,
+            "preview_after": None,
+            "thumb_after": None,
+        }
+
+        def update_gallery_scrollbar():
+            total = len(images)
+            max_offset = max(total - 5, 0)
+
+            if total <= 5:
+                gallery_status_label.configure(text=f"{total}/{total}" if total else "0/0")
+                gallery_scroll.set(0.0, 1.0)
+                return
+
+            start = gallery_offset["value"] / total
+            end = min((gallery_offset["value"] + 5) / total, 1.0)
+            gallery_scroll.set(start, end)
+            gallery_status_label.configure(
+                text=f"{gallery_offset['value'] + 1}-{min(gallery_offset['value'] + 5, total)}/{total}"
+            )
+
+        def set_gallery_offset(offset):
+            max_offset = max(len(images) - 5, 0)
+            clamped = min(max(offset, 0), max_offset)
+            if clamped == gallery_offset["value"] and callable(self._render_gallery_page):
+                update_gallery_scrollbar()
+                return
+            gallery_offset["value"] = clamped
+            if callable(self._render_gallery_page):
+                self._render_gallery_page()
+
+        def on_gallery_scroll(*args):
+            if not args:
+                return
+            total = len(images)
+            max_offset = max(total - 5, 0)
+            if total <= 5:
+                update_gallery_scrollbar()
+                return
+
+            command = args[0]
+            if command == "moveto" and len(args) > 1:
+                fraction = float(args[1])
+                set_gallery_offset(int(round(fraction * max_offset)))
+            elif command == "scroll" and len(args) > 2:
+                delta = int(args[1])
+                amount = 1
+                if args[2] == "pages":
+                    amount = 5
+                set_gallery_offset(gallery_offset["value"] + delta * amount)
+
+        gallery_scroll.configure(command=on_gallery_scroll)
+
+        def get_preview_source(path):
+            if not path or not path.exists():
+                return None
+            if preview_cache["path"] == path and preview_cache["image"] is not None:
+                return preview_cache["image"]
+            try:
+                with Image.open(path) as img:
+                    source = img.copy()
+                preview_cache["path"] = path
+                preview_cache["image"] = source
+                return source
+            except (UnidentifiedImageError, OSError):
+                preview_cache["path"] = None
+                preview_cache["image"] = None
+                return None
+
+        def get_thumb_source(path):
+            if path in thumb_source_cache:
+                return thumb_source_cache[path]
+            try:
+                with Image.open(path) as img:
+                    source = img.copy()
+                thumb_source_cache[path] = source
+                return source
+            except (UnidentifiedImageError, OSError):
+                return None
+
+        def refresh_current_preview(force_reload=False):
+            path = self.current_image_path
+            if force_reload:
+                preview_cache["path"] = None
+                preview_cache["image"] = None
+                render_state["preview_size"] = None
+            if not path or not path.exists():
+                preview_label.configure(image="", text="No wallpaper set.")
+                preview_label.image = None
+                preview_name_label.configure(text="")
+                return
+
+            preview_name_label.configure(text=path.name)
+            source = get_preview_source(path)
+            if source is None:
+                preview_label.configure(image="", text="Error displaying image")
+                preview_label.image = None
+                preview_name_label.configure(text="")
+                return
+
+            redraw_preview(force=True)
+
+        def render_gallery_page():
+            visible = images[gallery_offset["value"]: gallery_offset["value"] + 5]
+
+            for idx in range(5):
+                img_label, date_label = thumb_slots[idx]
+                if idx >= len(visible):
+                    img_label.configure(image="", text="No image")
+                    img_label.image = None
+                    img_label.unbind("<Button-1>")
+                    date_label.configure(text="")
+                    continue
+
+                img_path = visible[idx]
+                img_label.configure(text="")
+                img_label.bind("<Button-1>", lambda e, p=img_path: self.on_thumbnail_click(p))
+
+                date_str = img_path.stem.split('_')[-1]
+                try:
+                    parsed_date = datetime.datetime.strptime(date_str, "%Y%m%d")
+                    display_name = parsed_date.strftime("%b %d, %Y")
+                except ValueError:
+                    display_name = img_path.stem
+                date_label.configure(text=display_name)
+
+            render_state["thumb_size"] = None
+            redraw_thumbnails(force=True)
+            update_gallery_scrollbar()
+
+        self._refresh_preview_ui = refresh_current_preview
+        self._render_gallery_page = render_gallery_page
+
+        def redraw_preview(_event=None, force=False):
+            source = get_preview_source(self.current_image_path)
+            if source is None:
+                return
+            avail_w = max(preview_frame.winfo_width() - 16, 220)
+            avail_h = max(preview_frame.winfo_height() - 50, 180)
+            size_key = (avail_w, avail_h)
+            if not force and render_state["preview_size"] == size_key:
+                return
+            render_state["preview_size"] = size_key
+
+            resized = source.copy()
+            resized.thumbnail((avail_w, avail_h))
+            tk_img = ImageTk.PhotoImage(resized)
+            preview_label.configure(image=tk_img, text="")
+            preview_label.image = tk_img
+
+        def redraw_thumbnails(_event=None, force=False):
+            container_w = max(latest_frame.winfo_width() - 30, 500)
+            container_h = max(latest_frame.winfo_height() - 42, layout_state["thumb_container_min"])
+            per_width = max(container_w // 5 - 12, 80)
+            per_height = max(container_h - 24, layout_state["thumb_min_height"])
+            size_key = (per_width, per_height, gallery_offset["value"])
+            if not force and render_state["thumb_size"] == size_key:
+                return
+            render_state["thumb_size"] = size_key
+
+            visible = images[gallery_offset["value"]: gallery_offset["value"] + 5]
+            for idx, img_path in enumerate(visible):
+                original = get_thumb_source(img_path)
+                if original is None:
+                    continue
+                view = original.copy()
+                view.thumbnail((per_width, per_height))
+                tk_img = ImageTk.PhotoImage(view)
+                img_label, date_label = thumb_slots[idx]
+                img_label.configure(image=tk_img, text="")
+                img_label.image = tk_img
+
+        def schedule_preview_redraw(_event=None):
+            if render_state["preview_after"]:
+                win.after_cancel(render_state["preview_after"])
+            render_state["preview_after"] = win.after(45, lambda: redraw_preview())
+
+        def schedule_thumb_redraw(_event=None):
+            if render_state["thumb_after"]:
+                win.after_cancel(render_state["thumb_after"])
+            render_state["thumb_after"] = win.after(60, lambda: redraw_thumbnails())
+
+        def apply_adaptive_layout(_event=None):
+            if _event is not None and _event.widget is not win:
+                return
+            h = max(win.winfo_height(), 560)
+            if h < 680:
+                preview_weight = 2
+                latest_weight = 3
+                name_font_size = 9
+                thumb_font_size = 7
+                layout_state["thumb_min_height"] = 74
+                layout_state["thumb_container_min"] = 150
+            elif h > 980:
+                preview_weight = 6
+                latest_weight = 2
+                name_font_size = 11
+                thumb_font_size = 9
+                layout_state["thumb_min_height"] = 64
+                layout_state["thumb_container_min"] = 130
+            else:
+                preview_weight = 5
+                latest_weight = 2
+                name_font_size = 10
+                thumb_font_size = 8
+                layout_state["thumb_min_height"] = 60
+                layout_state["thumb_container_min"] = 120
+
+            main_frame.grid_rowconfigure(2, weight=preview_weight)
+            main_frame.grid_rowconfigure(3, weight=latest_weight)
+            preview_name_label.configure(font=("Segoe UI", name_font_size, "bold"))
+
+            for idx, _ in enumerate(status_rows):
+                value_labels[idx].configure(wraplength=max(status_frame.winfo_width() - 200, 200))
+
+            for _, date_label in thumb_slots:
+                date_label.configure(font=("Consolas", thumb_font_size))
+
+            schedule_preview_redraw()
+            schedule_thumb_redraw()
+
+        preview_frame.bind("<Configure>", schedule_preview_redraw)
+        latest_frame.bind("<Configure>", schedule_thumb_redraw)
+        win.bind("<Configure>", apply_adaptive_layout)
+        refresh_current_preview(force_reload=True)
+        render_gallery_page()
+        win.after(20, schedule_preview_redraw)
+        win.after(20, schedule_thumb_redraw)
+        win.after(20, apply_adaptive_layout)
 
     def create_thumbnail(self, parent, img_path):
         try:
