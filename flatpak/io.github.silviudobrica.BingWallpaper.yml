@@ -55,11 +55,22 @@ modules:
       - install -Dm644 flatpak/io.github.silviudobrica.BingWallpaper.metainfo.xml -t /app/share/metainfo/
       - install -Dm644 flatpak/io.github.silviudobrica.BingWallpaper.svg -t /app/share/icons/hicolor/scalable/apps/
     sources:
+      # The checkout itself. Everything flatpak-builder or the CI action writes
+      # into the checkout must be skipped, or the copy recurses into itself.
       - type: dir
         path: ..
         skip:
           - .git
+          - .github
+          - .flatpak-builder
+          - flatpak_app
+          - build-dir
+          - builddir
+          - repo
           - dist
           - build
-          - build-dir
-          - .flatpak-builder
+          - __pycache__
+          - tests/__pycache__
+          - .venv
+          - venv
+          - .pytest_cache

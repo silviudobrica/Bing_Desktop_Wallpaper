@@ -2,8 +2,13 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import platform_linux as pl  # noqa: E402
+
+# Linux desktop integration: path conventions (HOME, XDG) are POSIX-only.
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux platform tests")
 
 
 # ---------------------------------------------------------------- environment
