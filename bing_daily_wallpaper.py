@@ -52,7 +52,7 @@ SPIF_SENDWININICHANGE = 0x02
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.9"
+    VERSION = "1.3.10"
 
 # Configuration
 # Bing API, retry and retention constants live in bing_core.py.
@@ -1063,8 +1063,8 @@ try {
 
     def latest_local_image(self):
         """Most recent downloaded wallpaper on disk, or None."""
-        images = sorted(IMAGE_DIR.glob("bing_*.jpg"))
-        return images[-1] if images else None
+        images = core.sort_images_newest_first(IMAGE_DIR.glob("bing_*.jpg"), os.path.getmtime)
+        return images[0] if images else None
 
     def cleanup_old_images(self):
         """Delete wallpapers older than keep_images_days (0 = keep forever).
@@ -1343,7 +1343,7 @@ try {
         latest_frame.grid_columnconfigure(5, weight=0)
         latest_frame.grid_rowconfigure(1, weight=0)
 
-        images = sorted(IMAGE_DIR.glob("bing_*.jpg"), key=os.path.getmtime, reverse=True)
+        images = core.sort_images_newest_first(IMAGE_DIR.glob("bing_*.jpg"), os.path.getmtime)
         gallery_offset = {"value": 0}
         thumb_slots = []
 

@@ -88,6 +88,22 @@ def image_filename(date_str):
     return f"bing_{date_str}.jpg"
 
 
+def sort_images_newest_first(paths, mtime_of=None):
+    """Order wallpapers by the date in their name (bing_YYYYMMDD.jpg), newest
+    first. Modification time is not usable for this: backfill downloads older
+    days after today's image, so they end up with the newer timestamps. Files
+    without a date in the name go last, newest modification first."""
+    mtime_of = mtime_of or (lambda p: 0)
+    dated, undated = [], []
+    for p in paths:
+        p = Path(p)
+        date = parse_image_date(p)
+        (dated if date else undated).append((date, p))
+    dated.sort(key=lambda item: item[0], reverse=True)
+    undated.sort(key=lambda item: mtime_of(item[1]), reverse=True)
+    return [p for _, p in dated] + [p for _, p in undated]
+
+
 def parse_image_date(path):
     """Date encoded in a wallpaper file name (bing_YYYYMMDD.jpg), or None."""
     stem = Path(str(path)).stem
