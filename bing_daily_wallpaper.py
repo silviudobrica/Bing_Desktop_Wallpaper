@@ -26,8 +26,13 @@ from requests.exceptions import SSLError
 
 def check_single_instance():
     mutex_name = "Local\\BingWallpaperTrayAppMutex"
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-    if ctypes.windll.kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
+    # use_last_error=True makes ctypes capture GetLastError right after the call,
+    # so it cannot be clobbered by other Win32 calls made by the runtime.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    mutex = kernel32.CreateMutexW(None, False, mutex_name)
+    if ctypes.get_last_error() == 183: # ERROR_ALREADY_EXISTS
         print("Application is already running.")
         sys.exit(0)
     return mutex # Keep a reference so it isn't garbage collected
@@ -41,7 +46,7 @@ SPIF_SENDWININICHANGE = 0x02
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.7"
+    VERSION = "1.3.8"
 
 # Configuration
 BING_API = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US"
@@ -106,7 +111,11 @@ class BingTrayApp:
         self.update_in_progress = False
         self._refresh_preview_ui = None
         self._render_gallery_page = None
-        
+        # Serializes wallpaper checks so startup, Check Now, F5 and the interval
+        # loop never download the same image concurrently.
+        self._check_lock = threading.Lock()
+        self.cleanup_partial_downloads()
+
         self.config = self.load_config()
         interval_minutes = self.config.get("check_interval_minutes", 720)
         self.check_interval = interval_minutes * 60 if interval_minutes > 0 else 0
@@ -166,11 +175,22 @@ class BingTrayApp:
         return {}
 
     def save_config(self):
+        # Write to a sibling temp file and atomically replace, so a crash or
+        # power loss mid-write never leaves a truncated config.json behind.
+        temp_path = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
         try:
-            with open(CONFIG_FILE, 'w') as f:
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, CONFIG_FILE)
         except Exception as e:
             log_msg(f"Error saving config: {e}", "error")
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
 
     def format_ts(self, timestamp):
         if not timestamp:
@@ -198,8 +218,23 @@ class BingTrayApp:
             pass
         log_msg(f"{title}: {message}")
 
+    def run_on_ui_thread(self, func):
+        """Run func on the Tk main thread. Tk is not thread-safe, so worker
+        threads must never touch widgets or StringVars directly."""
+        if threading.current_thread() is threading.main_thread():
+            func()
+            return
+        if self.root:
+            try:
+                self.root.after(0, func)
+            except Exception:
+                pass
+
     def update_status_panel(self):
         if not self.status_vars:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            self.run_on_ui_thread(self.update_status_panel)
             return
         interval_minutes = self.config.get("check_interval_minutes", 720)
         self.status_vars["last_check"].set(self.format_ts(self.last_check))
@@ -697,37 +732,61 @@ class BingTrayApp:
             log_msg(f"API Fetch Error: {e}", "error")
             return None
 
+    def cleanup_partial_downloads(self):
+        """Remove leftover temp files from interrupted or failed downloads."""
+        for pattern in ("bing_*.tmp", "bing_*.part"):
+            for leftover in IMAGE_DIR.glob(pattern):
+                try:
+                    leftover.unlink()
+                    log_msg(f"Removed stale partial download: {leftover.name}")
+                except Exception as e:
+                    log_msg(f"Could not remove stale partial download {leftover.name}: {e}", "error")
+
     def download_image(self, url, date_str):
         filename = f"bing_{date_str}.jpg"
         file_path = IMAGE_DIR / filename
-        
+
         if file_path.exists() and file_path.stat().st_size > 0:
             return file_path
-        
+
+        # Unique per process/thread so two downloads can never collide on the
+        # same temp file (this was the source of WinError 32 sharing violations).
+        temp_path = IMAGE_DIR / f"{filename}.{os.getpid()}.{threading.get_ident()}.part"
         try:
             resp = self.session_get(url, timeout=30, proxies=self.get_proxy_dict(), stream=True)
             resp.raise_for_status()
-            
-            if 'image' not in resp.headers.get('Content-Type', ''):
+
+            content_type = resp.headers.get('Content-Type', '')
+            if 'image' not in content_type:
+                log_msg(f"Download Error: unexpected Content-Type '{content_type}' for {url}", "error")
                 return None
 
-            temp_path = file_path.with_suffix(".tmp")
             with open(temp_path, 'wb') as f:
                 for chunk in resp.iter_content(chunk_size=8192):
                     f.write(chunk)
-            
+
             try:
                 with Image.open(temp_path) as img:
                     img.verify()
-                temp_path.replace(file_path)
-                return file_path
-            except Exception:
-                if temp_path.exists(): os.remove(temp_path)
+            except Exception as e:
+                log_msg(f"Downloaded image failed verification: {e}", "error")
                 return None
 
+            os.replace(temp_path, file_path)
+            return file_path
+
         except Exception as e:
+            # If another check finished the same image meanwhile, use it.
+            if file_path.exists() and file_path.stat().st_size > 0:
+                return file_path
             log_msg(f"Download Error: {e}", "error")
             return None
+        finally:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
 
     def set_wallpaper(self, image_path):
         if not image_path or not image_path.exists():
@@ -755,6 +814,19 @@ class BingTrayApp:
             except Exception: pass
 
     def check_and_update(self, force=False):
+        if not self._check_lock.acquire(blocking=False):
+            log_msg("Wallpaper check already in progress; skipping duplicate request.")
+            return
+        try:
+            self._check_and_update_locked(force)
+        finally:
+            self._check_lock.release()
+
+    def _refresh_preview_if_visible(self):
+        if self.root and self.root.winfo_viewable():
+            self.setup_ui(self.root)
+
+    def _check_and_update_locked(self, force=False):
         self.last_check = time.time()
         try:
             info = self.get_bing_image_info()
@@ -780,8 +852,7 @@ class BingTrayApp:
             self.last_error = "None"
             self.last_error_time = 0
             
-            if self.root and self.root.winfo_viewable():
-                self.root.after(0, lambda: self.setup_ui(self.root))
+            self.run_on_ui_thread(self._refresh_preview_if_visible)
             self.update_status_panel()
                 
         except Exception as e:
@@ -789,6 +860,9 @@ class BingTrayApp:
             self.record_error(str(e))
 
     def background_loop(self):
+        # Initial forced check at startup. Running it here instead of in a
+        # separate thread avoids racing the interval check below.
+        self.check_and_update(force=True)
         while self.running:
             try:
                 if self.check_interval > 0:
@@ -829,7 +903,7 @@ class BingTrayApp:
         return pystray.Menu(
             item('Preview / Gallery', self.on_open_preview, default=True),
             item('Settings', self.on_open_settings),
-            item('Check Now', lambda i, it: threading.Thread(target=self.check_and_update, args=(True,)).start()),
+            item('Check Now', lambda i, it: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start()),
             item('Check for Updates', lambda i, it: threading.Thread(target=self.check_for_updates, args=(True,), daemon=True).start()),
             pystray.Menu.SEPARATOR,
             item('Interval', pystray.Menu(*sub_items)),
@@ -1245,7 +1319,6 @@ class BingTrayApp:
     def run(self):
         t = threading.Thread(target=self.background_loop, daemon=True)
         t.start()
-        threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start()
         
         try:
             icon_img = Image.new('RGB', (64, 64), color=(0, 120, 215))
