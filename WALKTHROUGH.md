@@ -62,8 +62,8 @@ Releases are published by CI when a version tag is pushed. The tag must match `_
 2. Commit, then tag and push:
 
    ```powershell
-   git tag v1.3.9
-   git push origin main v1.3.9
+   git tag v1.3.10
+   git push origin main v1.3.10
    ```
 
 3. The `release` job waits for the tests and the build, verifies that the tag matches `_version.py`, creates the GitHub release named `Bing Daily Wallpaper v<version>` with `RELEASE_NOTES_<version>.md` as its body (GitHub-generated notes if the file is missing), and attaches the CI-built `InstallBingWallpaper.exe` and its `.sha256`. Tags containing a `-` (for example `v1.4.0-beta1`) are marked as pre-releases.

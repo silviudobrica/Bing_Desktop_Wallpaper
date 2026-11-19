@@ -215,3 +215,20 @@ def test_lock_screen_picture_mode_values_turn_spotlight_off():
     assert names["RotatingLockScreenEnabled"] == 0
     assert names["SlideshowEnabled"] == 0
     assert all(subkey.startswith("Software\\Microsoft\\Windows\\CurrentVersion") for subkey, _, _ in core.LOCK_SCREEN_PICTURE_MODE_VALUES)
+
+
+# ---------------------------------------------------------------- gallery order
+def test_sort_images_newest_first_uses_date_in_name_not_mtime():
+    today, d1, d2, d3 = (_img(0), _img(1), _img(2), _img(3))
+    # Backfill wrote the older days after today's image, so their mtimes are newer.
+    mtimes = {today: 100, d3: 200, d2: 300, d1: 400}
+    ordered = core.sort_images_newest_first([d2, today, d3, d1], mtimes.get)
+    assert ordered == [today, d1, d2, d3]
+
+
+def test_sort_images_newest_first_puts_undated_last_by_mtime():
+    odd_new, odd_old = Path("C:/Pictures/Bing/bing_custom.jpg"), Path("C:/Pictures/Bing/bing_old.jpg")
+    mtimes = {odd_new: 50, odd_old: 10, _img(0): 1, _img(1): 2}
+    ordered = core.sort_images_newest_first([odd_old, _img(1), odd_new, _img(0)], mtimes.get)
+    assert ordered == [_img(0), _img(1), odd_new, odd_old]
+    assert core.sort_images_newest_first([]) == []
