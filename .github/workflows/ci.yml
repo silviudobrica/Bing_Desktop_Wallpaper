@@ -67,8 +67,8 @@ jobs:
 
   release:
     name: Publish GitHub release
-    # Only for version tags, e.g. v1.3.8. Pushing the tag is the one manual step:
-    #   git tag v1.3.8 && git push origin v1.3.8
+    # Only for version tags, e.g. v1.3.9. Pushing the tag is the one manual step:
+    #   git tag v1.3.9 && git push origin v1.3.9
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest

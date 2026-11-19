@@ -192,3 +192,26 @@ def test_sha256_of_file(tmp_path):
     data = b"x" * (3 * 1024 * 1024 + 17)
     f.write_bytes(data)
     assert core.sha256_of_file(f) == hashlib.sha256(data).hexdigest()
+
+
+# ---------------------------------------------------------------- lock screen
+def test_lock_screen_copy_name_is_unique_per_timestamp():
+    a = core.lock_screen_copy_name(Path("Pictures") / "Bing" / "bing_2026-11-19.jpg", 1700000000.7)
+    b = core.lock_screen_copy_name("bing_2026-11-19.jpg", 1700000001)
+    assert a == "lockscreen_bing_2026-11-19_1700000000.jpg"
+    assert b == "lockscreen_bing_2026-11-19_1700000001.jpg"
+    assert core.lock_screen_copy_name("noext", 5) == "lockscreen_noext_5.jpg"
+
+
+def test_select_stale_lock_screen_copies_keeps_current():
+    paths = [Path("d/lockscreen_a_1.jpg"), Path("d/lockscreen_a_2.jpg"), Path("d/lockscreen_b_3.jpg")]
+    assert core.select_stale_lock_screen_copies(paths, Path("d/lockscreen_a_2.jpg")) == [paths[0], paths[2]]
+    assert core.select_stale_lock_screen_copies(paths) == paths
+    assert core.select_stale_lock_screen_copies([], Path("d/x.jpg")) == []
+
+
+def test_lock_screen_picture_mode_values_turn_spotlight_off():
+    names = {name: value for _, name, value in core.LOCK_SCREEN_PICTURE_MODE_VALUES}
+    assert names["RotatingLockScreenEnabled"] == 0
+    assert names["SlideshowEnabled"] == 0
+    assert all(subkey.startswith("Software\\Microsoft\\Windows\\CurrentVersion") for subkey, _, _ in core.LOCK_SCREEN_PICTURE_MODE_VALUES)
