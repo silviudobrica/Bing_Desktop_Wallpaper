@@ -7,6 +7,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import platform_linux as pl  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """No test may touch the real home: Flatpak paths resolve via HOME."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    return home
+
 # Linux desktop integration: path conventions (HOME, XDG) are POSIX-only.
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux platform tests")
 
@@ -204,7 +215,7 @@ def test_kde_lock_screen_config_preserves_other_groups():
 
 def test_kde_lock_screen_written_atomically(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-    p = make_platform(tmp_path)
+    p = make_platform(tmp_path, flatpak=False)
     img = tmp_path / "bing_20261119.jpg"
     img.write_bytes(b"x")
     ok, detail = p.set_lock_screen(img)
@@ -242,3 +253,61 @@ def test_autostart_flatpak_uses_background_portal(tmp_path):
 def test_describe(tmp_path):
     assert make_platform(tmp_path).describe() == "KDE Plasma (Flatpak)"
     assert make_platform(tmp_path, desktop="gnome", flatpak=False).describe() == "GNOME (native)"
+
+
+def test_flatpak_lock_screen_targets_host_config_and_writes_in_place(tmp_path, monkeypatch):
+    # Inside the sandbox XDG_CONFIG_HOME is private; Plasma reads ~/.config.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".var" / "app" / "x" / "config"))
+    rc = tmp_path / ".config" / "kscreenlockerrc"
+    rc.parent.mkdir(parents=True)
+    rc.write_text("[Greeter]\nWallpaperPlugin=org.kde.image\n")
+    inode = rc.stat().st_ino
+    p = make_platform(tmp_path, flatpak=True)
+    assert p.kscreenlockerrc_path() == rc
+    img = tmp_path / "bing_20261119.jpg"
+    img.write_bytes(b"x")
+    assert p.set_lock_screen(img) == (True, "kscreenlockerrc")
+    assert rc.stat().st_ino == inode  # rewritten in place, no rename
+    assert f"Image={img.resolve().as_uri()}" in rc.read_text()
+    assert "FillMode=2" in rc.read_text()
+    assert not (tmp_path / ".var").exists()
+
+
+def test_flatpak_lock_screen_needs_existing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = make_platform(tmp_path, flatpak=True)
+    img = tmp_path / "bing_20261119.jpg"
+    img.write_bytes(b"x")
+    ok, detail = p.set_lock_screen(img)
+    assert ok is False and "System Settings" in detail
+
+
+def test_native_config_dir_follows_xdg(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    assert make_platform(tmp_path, flatpak=False).host_config_dir() == tmp_path / "cfg"
+
+
+# ---------------------------------------------------------------- self-update
+def test_flatpak_installation_from_info():
+    home = Path("/home/u")
+    assert pl.flatpak_installation_from_info("[Instance]\napp-path=/home/u/.local/share/flatpak/app/x/current/active/files\n", home) == "user"
+    assert pl.flatpak_installation_from_info("[Instance]\napp-path=/var/lib/flatpak/app/x/current/active/files\n", home) == "system"
+    assert pl.flatpak_installation_from_info("garbage [[[", home) == "system"
+
+
+def test_install_update_bundle_runs_flatpak_on_the_host(tmp_path, monkeypatch):
+    p = make_platform(tmp_path, flatpak=True)
+    monkeypatch.setattr(p, "flatpak_installation", lambda: "user")
+    calls = []
+
+    def runner(cmd, timeout):
+        calls.append((cmd, timeout))
+        return 0, "Installing...\nInstallation complete.\n"
+
+    ok, detail = p.install_update_bundle(tmp_path / "BingWallpaper.flatpak", runner=runner)
+    assert ok and detail.endswith("Installation complete.")
+    assert calls[0][0] == ["flatpak", "install", "--user", "-y", "--noninteractive", "--reinstall", str(tmp_path / "BingWallpaper.flatpak")]
+    ok, detail = p.install_update_bundle(tmp_path / "b.flatpak", runner=lambda c, t: (1, "error: no remote\n"))
+    assert ok is False and "no remote" in detail
+    assert make_platform(tmp_path, flatpak=False).supports_self_update is False

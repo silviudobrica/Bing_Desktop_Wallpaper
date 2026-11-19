@@ -11,6 +11,7 @@ threads, so a UI must marshal to its own thread.
 """
 import datetime
 import json
+import tempfile
 import logging
 import os
 import threading
@@ -225,6 +226,43 @@ class WallpaperService:
         resp = self.session_get(RELEASES_API, timeout=10, proxies=self.get_proxy_dict(RELEASES_API), headers=headers)
         resp.raise_for_status()
         return resp.json()
+
+    def download_release_asset(self, url, name, sha256=None, target_dir=None, timeout=180):
+        """Download a release asset to target_dir/name through the configured
+        proxy and CA bundle, verify it against sha256 when one is known, and
+        return the final path. A mismatch discards the file and raises."""
+        target_dir = Path(target_dir) if target_dir else Path(tempfile.gettempdir()) / self.app_name / "updates"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / name
+        temp_target = target.with_suffix(target.suffix + ".download")
+        log_msg(f"Downloading {name} from {url} to {target}")
+        headers = {"User-Agent": f"{self.app_name}/{self.version}"}
+        resp = self.session_get(url, timeout=timeout, proxies=self.get_proxy_dict(url), headers=headers, stream=True)
+        resp.raise_for_status()
+        try:
+            with open(temp_target, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+            if sha256:
+                actual = core.sha256_of_file(temp_target)
+                if actual != sha256:
+                    raise RuntimeError(
+                        f"{name} checksum mismatch: the download does not match the hash published "
+                        f"on GitHub (expected {sha256[:12]}..., got {actual[:12]}...). The file was discarded."
+                    )
+                log_msg(f"{name} SHA-256 verified against the release digest.")
+            else:
+                log_msg(f"No SHA-256 published for {name}; skipping checksum verification.")
+            os.replace(temp_target, target)
+        finally:
+            try:
+                if temp_target.exists():
+                    temp_target.unlink()
+            except Exception:
+                pass
+        log_msg(f"Downloaded successfully: {target}")
+        return target
 
     # ------------------------------------------------------------ config
     def load_config(self):

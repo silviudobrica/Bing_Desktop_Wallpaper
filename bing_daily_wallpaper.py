@@ -193,48 +193,9 @@ class BingTrayApp(WallpaperService):
         if not url or not url.lower().endswith(".exe"):
             log_msg(f"No direct installer URL in release metadata: {url}")
             return None
-
         installer_name = info.get("installer_name", "InstallBingWallpaper.exe")
         temp_dir = Path(tempfile.gettempdir()) / APP_NAME / "updates"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        target = temp_dir / installer_name
-        temp_target = target.with_suffix(".download")
-        log_msg(f"Downloading installer from {url} to {target}")
-
-        headers = {
-            "User-Agent": f"{APP_NAME}/{VERSION}"
-        }
-        resp = self.session_get(url, timeout=90, proxies=self.get_proxy_dict(), headers=headers, stream=True)
-        resp.raise_for_status()
-
-        try:
-            with open(temp_target, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-
-            expected_sha256 = info.get("sha256")
-            if expected_sha256:
-                actual_sha256 = core.sha256_of_file(temp_target)
-                if actual_sha256 != expected_sha256:
-                    raise RuntimeError(
-                        "Installer checksum mismatch: the download does not match the hash published "
-                        f"on GitHub (expected {expected_sha256[:12]}..., got {actual_sha256[:12]}...). "
-                        "The file was discarded."
-                    )
-                log_msg("Installer SHA-256 verified against the release digest.")
-            else:
-                log_msg("No SHA-256 published for this installer; skipping checksum verification.")
-
-            os.replace(temp_target, target)
-        finally:
-            try:
-                if temp_target.exists():
-                    temp_target.unlink()
-            except Exception:
-                pass
-        log_msg(f"Installer downloaded successfully: {target}")
-        return target
+        return self.download_release_asset(url, installer_name, info.get("sha256"), temp_dir, timeout=90)
 
     def launch_installer_and_exit(self, installer_path):
         subprocess.Popen([str(installer_path)], cwd=str(installer_path.parent))
@@ -422,8 +383,8 @@ class BingTrayApp(WallpaperService):
 
         settings_win = tk.Toplevel(self.root)
         settings_win.title("Settings")
-        settings_win.geometry("540x600")
-        settings_win.minsize(540, 600)
+        settings_win.geometry("620x600")
+        settings_win.minsize(620, 600)
         settings_win.resizable(True, True)
         settings_win.transient(self.root)
         settings_win.grab_set()

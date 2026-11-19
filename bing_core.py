@@ -238,13 +238,13 @@ def find_sha256_in_text(text, asset_name=None):
     return match.group(0).lower() if match else None
 
 
-def select_installer_asset(assets, release_body=""):
-    """Pick the installer .exe from a release's assets. Returns
-    {'name', 'url', 'sha256'} (sha256 may be None) or None."""
+def select_release_asset(assets, release_body="", suffix=".exe", hints=("bingwallpaper",)):
+    """Pick the first asset whose name ends with suffix and contains one of
+    the hints. Returns {'name', 'url', 'sha256'} (sha256 may be None) or None."""
     for asset in assets or []:
         name = str(asset.get("name", ""))
         lowered = name.lower()
-        if lowered.endswith(".exe") and ("installbingwallpaper" in lowered or "bingwallpaper" in lowered):
+        if lowered.endswith(suffix) and any(h in lowered for h in hints):
             sha256 = parse_asset_digest(asset.get("digest")) or find_sha256_in_text(release_body, name)
             return {
                 "name": name,
@@ -252,6 +252,16 @@ def select_installer_asset(assets, release_body=""):
                 "sha256": sha256,
             }
     return None
+
+
+def select_installer_asset(assets, release_body=""):
+    """The Windows installer .exe of a release."""
+    return select_release_asset(assets, release_body, ".exe", ("installbingwallpaper", "bingwallpaper"))
+
+
+def select_flatpak_asset(assets, release_body=""):
+    """The single-file Flatpak bundle of a release."""
+    return select_release_asset(assets, release_body, ".flatpak", ("bingwallpaper",))
 
 
 # Registry values the Settings app writes when the lock screen is switched to

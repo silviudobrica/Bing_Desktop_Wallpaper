@@ -304,3 +304,21 @@ def test_platform_errors_surface_as_recorded_errors(svc):
     svc.set_startup_enabled(True)
     assert svc.last_error == "Startup toggle failed: no shortcut"
     assert svc.is_startup_enabled() is False
+
+
+# ---------------------------------------------------------------- release downloads
+def test_download_release_asset_verifies_sha256(svc, tmp_path):
+    import hashlib
+    body = b"flatpak-bundle-bytes"
+    svc.session.route("https://x/BingWallpaper.flatpak", FakeResponse(body=body))
+    target = svc.download_release_asset("https://x/BingWallpaper.flatpak", "BingWallpaper.flatpak",
+                                        hashlib.sha256(body).hexdigest(), tmp_path / "updates")
+    assert target == tmp_path / "updates" / "BingWallpaper.flatpak" and target.read_bytes() == body
+    assert not (tmp_path / "updates" / "BingWallpaper.flatpak.download").exists()
+
+
+def test_download_release_asset_discards_on_mismatch(svc, tmp_path):
+    svc.session.route("https://x/b.flatpak", FakeResponse(body=b"tampered"))
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        svc.download_release_asset("https://x/b.flatpak", "b.flatpak", "0" * 64, tmp_path / "updates")
+    assert list((tmp_path / "updates").glob("*")) == []

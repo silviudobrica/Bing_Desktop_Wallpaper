@@ -14,7 +14,7 @@ This release brings the app to Linux as a Flatpak, KDE Plasma first, with the sa
 - Lock screen on KDE (`kscreenlockerrc`) and GNOME (gsettings / portal).
 - System proxy support: the proxy is resolved before every request through the ProxyResolver portal, KDE's `kioslaverc` (manual, PAC and environment modes), GNOME's settings or the environment. A changed system proxy is used by the next download without a restart. Settings can still pin an explicit proxy and CA bundle.
 - Autostart through the Background portal, notifications through the Notification portal, single-instance handling, tray icon with the current wallpaper.
-- "Check for Updates" reports newer releases and opens the release page. Flatpak updates themselves arrive through Discover / `flatpak update`.
+- In-app updates like on Windows: "Check for Updates" downloads the release's Flatpak bundle, verifies its SHA-256, installs it through the host's `flatpak install` and restarts the app. From a plain checkout the dialog opens the release page.
 - Runs from a plain checkout too: `pip install -r requirements-linux.txt && python3 bing_qt_app.py`.
 
 ### Changed: shared core

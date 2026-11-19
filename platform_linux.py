@@ -324,7 +324,10 @@ class LinuxPlatform(Platform):
     def set_lock_screen(self, image_path):
         uri = Path(image_path).resolve().as_uri()
         if self.desktop == "kde":
-            self._set_kde_lock_screen(uri)
+            try:
+                self._set_kde_lock_screen(uri)
+            except Exception as e:
+                return False, str(e)
             return True, "kscreenlockerrc"
         if self.desktop == "gnome" and not self.in_flatpak and shutil.which("gsettings"):
             subprocess.run(["gsettings", "set", "org.gnome.desktop.screensaver", "picture-uri", uri], check=True, timeout=15)
@@ -342,8 +345,17 @@ class LinuxPlatform(Platform):
             return True, "Wallpaper portal"
         return False, "cancelled in the desktop's dialog" if code == 1 else f"Wallpaper portal refused it (code {code})"
 
+    def host_config_dir(self):
+        """The desktop's own config dir. Inside Flatpak XDG_CONFIG_HOME points
+        at the sandbox's private ~/.var/app/<id>/config, which Plasma never
+        reads; files granted with --filesystem=xdg-config/<file> appear at
+        their real host path, ~/.config/<file>."""
+        if self.in_flatpak:
+            return Path.home() / ".config"
+        return _xdg("XDG_CONFIG_HOME", ".config")
+
     def kscreenlockerrc_path(self):
-        return _xdg("XDG_CONFIG_HOME", ".config") / "kscreenlockerrc"
+        return self.host_config_dir() / "kscreenlockerrc"
 
     def _set_kde_lock_screen(self, uri):
         path = self.kscreenlockerrc_path()
@@ -353,10 +365,23 @@ class LinuxPlatform(Platform):
             subprocess.run(base + ["--group", "Greeter", "--group", "Wallpaper", "--group", "org.kde.image",
                                    "--group", "General", "--key", "Image", uri], check=True, timeout=15)
             return
+        if self.in_flatpak and not path.exists():
+            raise RuntimeError(
+                "kscreenlockerrc does not exist yet; open System Settings > Screen Locking > "
+                "Appearance once so Plasma creates it, then try again")
         text = path.read_text(encoding="utf-8") if path.exists() else ""
+        content = kde_lock_screen_config(text, uri)
+        if self.in_flatpak:
+            # The file is a single-file bind mount from the host: it can be
+            # rewritten in place, but a rename over it fails with EBUSY.
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_name(path.name + ".tmp")
-        temp.write_text(kde_lock_screen_config(text, uri), encoding="utf-8")
+        temp.write_text(content, encoding="utf-8")
         os.replace(temp, path)
 
     # ------------------------------------------------------------ proxies
@@ -380,7 +405,7 @@ class LinuxPlatform(Platform):
         return proxies_from_environment(self.environ)
 
     def _proxies_from_kde(self):
-        for candidate in (_xdg("XDG_CONFIG_HOME", ".config") / "kioslaverc", Path.home() / ".config" / "kioslaverc"):
+        for candidate in (self.host_config_dir() / "kioslaverc", Path.home() / ".config" / "kioslaverc"):
             try:
                 text = candidate.read_text(encoding="utf-8")
             except OSError:
@@ -446,6 +471,44 @@ class LinuxPlatform(Platform):
         elif path.exists():
             path.unlink()
 
+    # ------------------------------------------------------------ self-update
+    @property
+    def supports_self_update(self):
+        """A sandboxed app cannot replace itself, but with the
+        org.freedesktop.Flatpak permission it may ask the host to run
+        `flatpak install` on a bundle it downloaded (the manifest grants it)."""
+        return self.in_flatpak and shutil.which("flatpak-spawn") is not None
+
+    def flatpak_installation(self):
+        """'user' or 'system': where this app is installed, from /.flatpak-info."""
+        try:
+            return flatpak_installation_from_info(Path("/.flatpak-info").read_text(encoding="utf-8"), Path.home())
+        except OSError:
+            return "user"
+
+    def install_update_bundle(self, bundle_path, runner=None):
+        """Install a downloaded .flatpak bundle over this app via the host.
+        Returns (ok, detail)."""
+        runner = runner or self._run_host_command
+        cmd = ["flatpak", "install", f"--{self.flatpak_installation()}", "-y", "--noninteractive",
+               "--reinstall", str(bundle_path)]
+        code, output = runner(cmd, 900)
+        tail = "\n".join(line for line in output.strip().splitlines()[-5:])
+        if code == 0:
+            return True, tail or "installed"
+        return False, tail or f"flatpak install exited with {code}"
+
+    def _run_host_command(self, cmd, timeout):
+        proc = subprocess.run(["flatpak-spawn", "--host"] + list(cmd), capture_output=True, text=True, timeout=timeout)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    def restart_app(self):
+        """Relaunch the (updated) app from the host after this process exits."""
+        subprocess.Popen(
+            ["flatpak-spawn", "--host", "sh", "-c", f"sleep 2; exec flatpak run {APP_ID} --hidden"],
+            start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
     # ------------------------------------------------------------ misc
     def open_path(self, path):
         subprocess.Popen(["xdg-open", str(path)])
@@ -455,6 +518,19 @@ class LinuxPlatform(Platform):
 
 
 # ---------------------------------------------------------------- helpers
+def flatpak_installation_from_info(info_text, home):
+    """'user' when /.flatpak-info's app-path is under the home directory,
+    else 'system'."""
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    try:
+        parser.read_string(info_text)
+        app_path = parser.get("Instance", "app-path", fallback="")
+    except configparser.Error:
+        app_path = ""
+    return "user" if app_path.startswith(str(home)) else "system"
+
+
 def _js_string(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -472,6 +548,7 @@ def kde_lock_screen_config(text, uri):
             parser.add_section(section)
     parser[greeter]["WallpaperPlugin"] = "org.kde.image"
     parser[image]["Image"] = uri
+    parser[image].setdefault("FillMode", "2")
     parser[image]["PreviewImage"] = urllib.parse.unquote(urllib.parse.urlsplit(uri).path)  # KDE stores a plain path here
     import io
     out = io.StringIO()

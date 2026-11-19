@@ -42,6 +42,11 @@ finish-args:
   - --talk-name=org.kde.plasmashell
   # Tray icon (StatusNotifier).
   - --talk-name=org.kde.StatusNotifierWatcher
+  # In-app update: "Check for Updates" downloads the release bundle, verifies
+  # its SHA-256 and asks the host to run `flatpak install` on it, then
+  # relaunches the app. This is host command access; drop it (and the
+  # self-update) for a Flathub submission, where updates come from the store.
+  - --talk-name=org.freedesktop.Flatpak
 
 modules:
   - python3-requirements.json

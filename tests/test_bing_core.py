@@ -232,3 +232,14 @@ def test_sort_images_newest_first_puts_undated_last_by_mtime():
     ordered = core.sort_images_newest_first([odd_old, _img(1), odd_new, _img(0)], mtimes.get)
     assert ordered == [_img(0), _img(1), odd_new, odd_old]
     assert core.sort_images_newest_first([]) == []
+
+
+def test_select_flatpak_asset():
+    assets = [
+        {"name": "InstallBingWallpaper.exe", "browser_download_url": "u1", "digest": "sha256:" + HEX},
+        {"name": "BingWallpaper.flatpak", "browser_download_url": "u2", "digest": "sha256:" + HEX},
+        {"name": "BingWallpaper.flatpak.sha256", "browser_download_url": "u3"},
+    ]
+    assert core.select_flatpak_asset(assets) == {"name": "BingWallpaper.flatpak", "url": "u2", "sha256": HEX}
+    assert core.select_installer_asset(assets)["name"] == "InstallBingWallpaper.exe"
+    assert core.select_flatpak_asset(assets[:1]) is None

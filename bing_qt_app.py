@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollBar, QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
+import bing_core as core
 from bing_core import DEFAULT_MARKET, MARKET_PRESETS, MAX_BACKFILL_DAYS
 from bing_service import INTERVAL_PRESETS, WallpaperService, log_msg
 from platform_linux import APP_DISPLAY_NAME, APP_ID, LinuxPlatform, linux_paths
@@ -107,6 +108,7 @@ class ServiceSignals(QObject):
     images_changed = Signal()
     notification = Signal(str, str)
     update_result = Signal(dict, bool)
+    update_install_result = Signal(bool, str)
 
 
 class QtWallpaperService(WallpaperService):
@@ -130,9 +132,9 @@ class QtWallpaperService(WallpaperService):
         self.signals.notification.emit(title, message)
 
     def check_for_updates(self, manual=False):
-        """Compare the latest GitHub release with VERSION. A Flatpak cannot
-        install anything itself, so the result is only reported; the UI
-        offers the release page."""
+        """Compare the latest GitHub release with VERSION. In Flatpak the
+        bundle asset is offered for download and installation through the
+        host; otherwise the UI offers the release page."""
         self.last_update_check = time.time()
         try:
             data = self.fetch_latest_release()
@@ -140,6 +142,7 @@ class QtWallpaperService(WallpaperService):
             html_url = data.get("html_url", "")
             if not version:
                 raise ValueError("release has no tag")
+            asset = core.select_flatpak_asset(data.get("assets", []), data.get("body", ""))
         except Exception as e:
             log_msg(f"Update check failed: {e}", "error")
             if manual:
@@ -156,7 +159,31 @@ class QtWallpaperService(WallpaperService):
             self.last_status_message = f"Up to date: v{self.version}"
             self.on_state_changed()
             log_msg(f"No newer version found. Current={self.version}, Latest={version}")
-        self.signals.update_result.emit({"version": version, "html_url": html_url, "newer": newer}, manual)
+        self.signals.update_result.emit(
+            {"version": version, "html_url": html_url, "newer": newer, "asset": asset}, manual)
+
+    def perform_update_install(self, info, updates_dir):
+        """Worker: download the bundle, verify it, install it via the host."""
+        asset = info.get("asset") or {}
+        try:
+            if not asset.get("url"):
+                raise RuntimeError("the release has no Flatpak bundle attached")
+            self.set_status(f"Downloading update v{info['version']}...")
+            bundle = self.download_release_asset(asset["url"], asset["name"], asset.get("sha256"), updates_dir, timeout=600)
+            self.set_status(f"Installing update v{info['version']}...")
+            ok, detail = self.platform.install_update_bundle(bundle)
+            if not ok:
+                raise RuntimeError(detail)
+            try:
+                bundle.unlink()
+            except OSError:
+                pass
+            self.set_status(f"Update v{info['version']} installed; restarting")
+            log_msg(f"Update installed: {detail}")
+            self.signals.update_install_result.emit(True, detail)
+        except Exception as e:
+            self.record_error(f"Update install failed: {e}")
+            self.signals.update_install_result.emit(False, str(e))
 
 
 # ---------------------------------------------------------------- widgets
@@ -793,6 +820,8 @@ class BingQtApp(QObject):
         self.tray = TrayController(service, self.window, app) if self.tray_available else None
         service.signals.notification.connect(self.on_notification)
         service.signals.update_result.connect(self.on_update_result)
+        service.signals.update_install_result.connect(self.on_update_install_result)
+        self._pending_update = None
 
     def on_notification(self, title, message):
         if self.tray and self.tray.notify(title, message):
@@ -812,15 +841,44 @@ class BingQtApp(QObject):
         if not info.get("newer"):
             QMessageBox.information(self.window, "Update Check", f"You are up to date (v{VERSION}).")
             return
-        if self.platform.in_flatpak:
+        can_install = getattr(self.platform, "supports_self_update", False) and bool((info.get("asset") or {}).get("url"))
+        if can_install:
             text = (f"A new version (v{version}) is available.\n\n"
-                    "Flatpak apps are updated by the system: once the new version is published, "
-                    "it arrives through Discover (or `flatpak update`).\n\n"
-                    "Open the release page to read what changed?")
+                    "Download the Flatpak bundle, verify it and install it now? "
+                    "The app restarts when the update is done.")
+        elif self.platform.in_flatpak:
+            text = (f"A new version (v{version}) is available, but this release has no Flatpak bundle "
+                    "attached.\n\nOpen the release page to read what changed?")
         else:
             text = (f"A new version (v{version}) is available.\n\n"
                     "Open the release page to download it?")
         answer = QMessageBox.question(self.window, "Update Available", text,
+                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return
+        if can_install:
+            self._pending_update = info
+            updates_dir = Path(self.paths.data_dir) / "updates"
+            threading.Thread(target=self.service.perform_update_install, args=(info, updates_dir),
+                             name="update-install", daemon=True).start()
+        elif info.get("html_url"):
+            self.service.open_url(info["html_url"])
+
+    def on_update_install_result(self, ok, detail):
+        info = self._pending_update or {}
+        self._pending_update = None
+        if ok:
+            QMessageBox.information(self.window, "Update",
+                                    f"Update v{info.get('version', '')} installed. The app will now restart.")
+            try:
+                self.platform.restart_app()
+            except Exception as e:
+                log_msg(f"Could not schedule the restart: {e}", "error")
+            self.service.stop()
+            self.app.quit()
+            return
+        answer = QMessageBox.critical(self.window, "Update",
+                                      f"The update could not be installed:\n{detail}\n\nOpen the release page instead?",
                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer == QMessageBox.Yes and info.get("html_url"):
             self.service.open_url(info["html_url"])

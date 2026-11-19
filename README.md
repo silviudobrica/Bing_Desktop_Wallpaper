@@ -27,7 +27,7 @@ The same app, with the same window, settings and tray menu, is available for Lin
 - **Lock screen**: KDE through `kscreenlockerrc`; GNOME through gsettings or the portal.
 - **Proxies**: the system proxy is looked up before every request through the XDG ProxyResolver portal, then KDE's `kioslaverc`, GNOME's gsettings and the environment, so a changed proxy is used by the very next download. An explicit proxy in Settings still wins.
 - **Autostart**: the XDG Background portal (Settings > Run at Startup).
-- **Updates**: Flatpak apps are updated by Discover / GNOME Software / `flatpak update`, not by the app. "Check for Updates" tells you when a newer release exists and opens its page.
+- **Updates**: "Check for Updates" (daily in the background, or from the tray) downloads the new `BingWallpaper.flatpak` from the GitHub release, verifies its SHA-256, installs it through the host's `flatpak install` and restarts the app, like the Windows updater. Once the app is on Flathub, Discover / `flatpak update` do the same.
 
 Install the bundle attached to a release (`BingWallpaper.flatpak`), or run from a checkout:
 

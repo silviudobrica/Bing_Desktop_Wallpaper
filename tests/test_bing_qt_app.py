@@ -294,7 +294,7 @@ def test_update_check_reports_through_signal(env, monkeypatch):
                         lambda: {"tag_name": "v99.0.0", "html_url": "https://example/rel"})
     env.service.check_for_updates(manual=True)
     QApplication.processEvents()
-    assert results == [({"version": "99.0.0", "html_url": "https://example/rel", "newer": True}, True)]
+    assert results == [({"version": "99.0.0", "html_url": "https://example/rel", "newer": True, "asset": None}, True)]
     assert env.service.last_status_message == "Update available: v99.0.0"
     assert env.service.last_update_check > 0
 
@@ -315,6 +315,54 @@ def test_update_dialog_opens_release_page(env, monkeypatch):
     assert infos[-1] == f"You are up to date (v{qt_app.VERSION})."
     controller.on_update_result({"version": "99.0.0", "html_url": "u", "newer": True}, False)
     assert env.platform.opened == ["https://example/rel"]  # silent when automatic
+    controller.window.close()
+
+
+def test_in_app_update_downloads_installs_and_restarts(env, monkeypatch):
+    """Flatpak with a bundle asset: Yes -> download (verified) -> host install -> restart + quit."""
+    controller = qt_app.BingQtApp(env.app, env.service, env.platform, env.paths)
+    monkeypatch.setattr(type(env.platform), "supports_self_update", property(lambda self: True))
+    monkeypatch.setattr(qt_app.QMessageBox, "question", lambda *a, **k: qt_app.QMessageBox.Yes)
+    infos, installed, restarted, quit_calls = [], [], [], []
+    monkeypatch.setattr(qt_app.QMessageBox, "information", lambda *a: infos.append(a[2]))
+    monkeypatch.setattr(env.service, "download_release_asset",
+                        lambda url, name, sha, target_dir, timeout=0: (Path(target_dir).mkdir(parents=True, exist_ok=True) or Path(target_dir) / name))
+    monkeypatch.setattr(env.platform, "install_update_bundle", lambda bundle: installed.append(bundle) or (True, "Installation complete."))
+    monkeypatch.setattr(env.platform, "restart_app", lambda: restarted.append(True))
+    monkeypatch.setattr(env.app, "quit", lambda: quit_calls.append(True))
+    info = {"version": "99.0.0", "html_url": "u", "newer": True,
+            "asset": {"name": "BingWallpaper.flatpak", "url": "https://x/BingWallpaper.flatpak", "sha256": None}}
+    controller.on_update_result(info, True)
+    for _ in range(50):
+        QApplication.processEvents()
+        if quit_calls:
+            break
+        time.sleep(0.05)
+    assert installed == [env.paths.data_dir / "updates" / "BingWallpaper.flatpak"]
+    assert restarted == [True] and quit_calls == [True]
+    assert infos[-1] == "Update v99.0.0 installed. The app will now restart."
+    assert env.service.last_status_message.startswith("Update v99.0.0 installed")
+    controller.window.close()
+
+
+def test_in_app_update_failure_offers_release_page(env, monkeypatch):
+    controller = qt_app.BingQtApp(env.app, env.service, env.platform, env.paths)
+    monkeypatch.setattr(type(env.platform), "supports_self_update", property(lambda self: True))
+    monkeypatch.setattr(qt_app.QMessageBox, "question", lambda *a, **k: qt_app.QMessageBox.Yes)
+    errors = []
+    monkeypatch.setattr(qt_app.QMessageBox, "critical", lambda *a, **k: errors.append(a[2]) or qt_app.QMessageBox.Yes)
+    monkeypatch.setattr(env.service, "download_release_asset", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("checksum mismatch")))
+    info = {"version": "99.0.0", "html_url": "https://example/rel", "newer": True,
+            "asset": {"name": "BingWallpaper.flatpak", "url": "https://x/b", "sha256": "0" * 64}}
+    controller.on_update_result(info, True)
+    for _ in range(50):
+        QApplication.processEvents()
+        if errors:
+            break
+        time.sleep(0.05)
+    assert "checksum mismatch" in errors[-1]
+    assert env.platform.opened[-1] == "https://example/rel"
+    assert env.service.last_error == "Update install failed: checksum mismatch"
     controller.window.close()
 
 
