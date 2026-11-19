@@ -1,11 +1,11 @@
 # Bing Daily Wallpaper v1.3.8
 
 ## Release Title
-Bing Daily Wallpaper v1.3.8 - Startup Download Race Fix and Stability Improvements
+Bing Daily Wallpaper v1.3.8 - Lock Screen, Backfill, Retention and Startup Race Fix
 
 ## Release Notes
 
-This release fixes a startup race that produced a spurious "Image download failed" error on most app launches, and hardens several internal paths around threading and file writes.
+This release adds opt-in lock screen support, backfill of missed days, image retention and a Bing market setting. It also fixes a startup race that produced a spurious "Image download failed" error on most app launches, and hardens several internal paths around threading and file writes.
 
 ### Fixes
 
@@ -24,6 +24,26 @@ This release fixes a startup race that produced a spurious "Image download faile
 
 #### Atomic configuration saves
 - `config.json` is written to a temporary file and atomically replaced, so an interruption mid-write can no longer leave a truncated or empty configuration file.
+
+### New Features
+
+#### Lock screen support (opt-in)
+- New Settings option **Also set the Windows lock screen image**. Uses the Windows personalization API as the current user; no admin rights or extra dependencies.
+- On PCs where an organization policy enforces the lock screen image, the app detects the policy and reports it instead of failing silently.
+
+#### Backfill of missed days and resolution fallback
+- Each check now fetches the last 8 days from Bing and downloads any images missing locally (configurable 0-7 days, default 7), so days when the PC was off are no longer lost.
+- When Bing has no UHD version of an image, the app falls back to 1920x1080 instead of failing.
+
+#### Image retention
+- New **Keep images for (days)** setting deletes older wallpapers after each check. Default `0` keeps everything, as before. The current wallpaper is never deleted.
+
+#### Bing market
+- New **Bing market** setting (e.g. `en-US`, `de-DE`, `fr-FR`) replaces the hard-coded US region.
+
+#### Quieter, faster recovery from failed checks
+- After a failed check the app retries after 2, 5, 15, 30 and then 60 minutes instead of waiting a full interval.
+- No error notification for the first two consecutive failures, which covers the network not being ready right after login. The status panel still shows the error.
 
 ### Other
 

@@ -89,6 +89,18 @@ The application follows standard Windows practices for file storage:
 *   **Wallpapers:** %USERPROFILE%\\Pictures\\Bing_(Your downloaded images are kept here so you can easily find them.)_
     
 *   **Configuration:** %LOCALAPPDATA%\\Programs\\BingWallpaper\\config.json_(Stores your proxy settings and update interval preference.)_
+
+Wallpaper options (Settings > Wallpaper)
+---------------------------------------
+
+*   **Bing market:** Region of the daily image, e.g. `en-US`, `de-DE`, `fr-FR`. Default `en-US`.
+*   **Keep images for (days):** Wallpapers older than this are deleted after each check. `0` keeps everything (default). The image currently in use is never deleted.
+*   **Backfill missed days:** Downloads up to 7 recent images you missed while the PC was off, within the retention window. Default `7`, `0` disables.
+*   **Also set the Windows lock screen image:** Off by default. Uses the Windows personalization API as the current user (no admin rights). If your organization enforces a lock screen image by policy, the app detects this and reports it in the status panel instead of silently failing.
+
+The corresponding `config.json` keys are `market`, `keep_images_days`, `backfill_days` and `set_lock_screen`.
+
+If Bing does not offer a UHD version of an image, the app falls back to 1920x1080 automatically. After a failed check the app retries after 2, 5, 15, 30 and then 60 minutes instead of waiting a full interval, and only shows an error notification from the third consecutive failure on.
     
 *   **Logs:** %LOCALAPPDATA%\\Programs\\BingWallpaper\\logs\\_(Technical logs for troubleshooting.)_
     
