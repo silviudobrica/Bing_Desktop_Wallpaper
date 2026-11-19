@@ -1,0 +1,3 @@
+#!/bin/sh
+# Launcher installed as /app/bin/bing-wallpaper inside the Flatpak.
+exec python3 /app/lib/bing-wallpaper/bing_qt_app.py "$@"

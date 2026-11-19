@@ -1,0 +1,8 @@
+# Python packages bundled into the Flatpak (PySide6 comes from the BaseApp).
+# Regenerate flatpak/python3-requirements.json after changing this file, then put
+# the cp313 manylinux wheels back for Pillow (the runtime's Python is 3.13; the
+# generator picks the sdist, which would need a compile step in the sandbox):
+#   flatpak-pip-generator --requirements-file flatpak/requirements-flatpak.txt --output flatpak/python3-requirements
+requests==2.34.2
+Pillow==12.1.0
+jeepney==0.9.0

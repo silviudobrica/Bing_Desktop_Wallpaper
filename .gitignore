@@ -8,4 +8,7 @@ __pycache__/
 .venv/
 env/
 venv/
-.pre-commit-cache/
+.pre-commit-cache/.flatpak-builder/
+build-dir/
+repo/
+*.flatpak

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Bing Wallpaper
+GenericName=Daily wallpaper
+Comment=Set the Bing image of the day as your desktop and lock screen wallpaper
+Exec=bing-wallpaper
+Icon=io.github.silviudobrica.BingWallpaper
+Terminal=false
+Categories=Utility;Settings;DesktopSettings;
+Keywords=wallpaper;bing;background;lock screen;
+StartupNotify=false
+X-GNOME-UsesNotifications=true

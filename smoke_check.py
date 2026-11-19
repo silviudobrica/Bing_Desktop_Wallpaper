@@ -7,6 +7,12 @@ ROOT = Path(__file__).resolve().parent
 REQUIRED_FILES = [
     ROOT / "_version.py",
     ROOT / "bing_core.py",
+    ROOT / "bing_service.py",
+    ROOT / "platform_windows.py",
+    ROOT / "platform_linux.py",
+    ROOT / "bing_qt_app.py",
+    ROOT / "flatpak" / "io.github.silviudobrica.BingWallpaper.yml",
+    ROOT / "flatpak" / "python3-requirements.json",
     ROOT / "tests" / "test_bing_core.py",
     ROOT / "generate_version_info.py",
     ROOT / "file_version_info.txt",

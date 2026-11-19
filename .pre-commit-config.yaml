@@ -8,7 +8,7 @@ repos:
         pass_filenames: false
       - id: python-syntax-check
         name: Compile core Python files
-        entry: python -m py_compile bing_daily_wallpaper.py bing_core.py installer.py generate_version_info.py check_version_sync.py smoke_check.py
+        entry: python -m py_compile bing_daily_wallpaper.py bing_core.py bing_service.py platform_windows.py installer.py platform_linux.py bing_qt_app.py generate_version_info.py check_version_sync.py smoke_check.py
         language: system
         pass_filenames: false
       - id: smoke-check
