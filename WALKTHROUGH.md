@@ -16,8 +16,7 @@ If you want to modify the code or rebuild the installer:
 1. **Install Python**: Ensure Python 3.10+ is installed.
 2. **Install Dependencies**:
    ```powershell
-   pip install -r requirements.txt
-   pip install pyinstaller
+   pip install -r requirements-dev.txt
    ```
 ### Run the Build Script
 
@@ -43,7 +42,37 @@ Optional pre-commit check (recommended for contributors):
 
 This enables a local hook that verifies `_version.py` and `file_version_info.txt` stay in sync before each commit.
 It also compiles the core Python files to catch syntax errors before commit.
-Additionally, a lightweight smoke check validates packaging-critical wiring (spec metadata and build script version generation).
+Additionally, a lightweight smoke check validates packaging-critical wiring (spec metadata and build script version generation), and the unit tests run.
+
+### Tests and CI
+
+Pure logic (version comparison, Bing API parsing, proxy parsing, retry backoff, retention, installer asset and checksum selection) lives in `bing_core.py` with no GUI or network dependencies. Run the unit tests with:
+
+   ```powershell
+   python -m pytest -q
+   ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the compile step, version sync check, smoke check and unit tests on every push and pull request, then builds the installer on `windows-latest` and uploads `InstallBingWallpaper.exe` plus its `.sha256` file as a workflow artifact.
+
+### Publishing a release
+
+Releases are published by CI when a version tag is pushed. The tag must match `_version.py`:
+
+1. Bump `__version__` in `_version.py`, run `python generate_version_info.py`, and write `RELEASE_NOTES_<version>.md`.
+2. Commit, then tag and push:
+
+   ```powershell
+   git tag v1.3.8
+   git push origin main v1.3.8
+   ```
+
+3. The `release` job waits for the tests and the build, verifies that the tag matches `_version.py`, creates the GitHub release named `Bing Daily Wallpaper v<version>` with `RELEASE_NOTES_<version>.md` as its body (GitHub-generated notes if the file is missing), and attaches the CI-built `InstallBingWallpaper.exe` and its `.sha256`. Tags containing a `-` (for example `v1.4.0-beta1`) are marked as pre-releases.
+
+The in-app updater picks up the new release from the GitHub API and verifies the download against the digest GitHub computes for the attached asset.
+
+### Release checksums
+
+`build_installer.ps1` writes `dist\InstallBingWallpaper.exe.sha256`. The in-app updater verifies the downloaded installer against the SHA-256 digest GitHub publishes for release assets; if a release has no digest, it looks for a 64-character hash next to the asset name in the release notes. A mismatch discards the download and reports an error.
 
 This script will:
 

@@ -23,6 +23,10 @@ from tkinter import ttk, simpledialog, messagebox, filedialog
 import winreg
 import re
 from requests.exceptions import SSLError
+import bing_core as core
+from bing_core import (
+    DEFAULT_MARKET, MARKET_PRESETS, MAX_BACKFILL_DAYS,
+)
 
 def check_single_instance():
     mutex_name = "Local\\BingWallpaperTrayAppMutex"
@@ -49,21 +53,7 @@ except ImportError:
     VERSION = "1.3.8"
 
 # Configuration
-BING_API_BASE = "https://www.bing.com/HPImageArchive.aspx"
-DEFAULT_MARKET = "en-US"
-MARKET_PRESETS = [
-    "en-US", "en-GB", "en-CA", "en-AU", "en-IN", "de-DE", "fr-FR", "fr-CA",
-    "es-ES", "it-IT", "nl-NL", "pt-BR", "ja-JP", "zh-CN",
-]
-# Resolutions to try in order; Bing does not publish UHD for every image.
-IMAGE_RESOLUTION_SUFFIXES = ["_UHD.jpg", "_1920x1080.jpg"]
-# After a failed check, retry after these delays (minutes) instead of
-# waiting a full interval. The last value repeats.
-RETRY_BACKOFF_MINUTES = [2, 5, 15, 30, 60]
-# Do not toast the user until this many checks fail in a row (covers the
-# network not being up yet right after login).
-QUIET_FAILURE_COUNT = 3
-MAX_BACKFILL_DAYS = 7  # Bing's archive API returns at most 8 entries.
+# Bing API, retry and retention constants live in bing_core.py.
 RELEASES_API = "https://api.github.com/repos/SilviuDobrica/Bing_Desktop_Wallpaper/releases/latest"
 APP_NAME = "BingWallpaper"
 
@@ -213,18 +203,8 @@ class BingTrayApp:
             return "Never"
         return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
-    def version_tuple(self, version):
-        clean = str(version).strip().lower().lstrip("v")
-        parts = []
-        for chunk in clean.split('.'):
-            digits = ''.join(ch for ch in chunk if ch.isdigit())
-            parts.append(int(digits) if digits else 0)
-        while len(parts) < 3:
-            parts.append(0)
-        return tuple(parts[:3])
-
     def is_newer_version(self, candidate):
-        return self.version_tuple(candidate) > self.version_tuple(VERSION)
+        return core.is_newer_version(candidate, VERSION)
 
     def notify_user(self, title, message):
         try:
@@ -277,21 +257,13 @@ class BingTrayApp:
             log_msg(f"Operation failed (notification suppressed): {message}")
 
     def get_int_setting(self, key, default, minimum, maximum):
-        try:
-            value = int(str(self.config.get(key, default)).strip())
-        except (TypeError, ValueError):
-            return default
-        return max(minimum, min(value, maximum))
+        return core.clamp_int(self.config.get(key, default), default, minimum, maximum)
 
     def get_market(self):
-        market = str(self.config.get("market", DEFAULT_MARKET)).strip()
-        if re.fullmatch(r"[A-Za-z]{2}-[A-Za-z]{2}", market):
-            return market
-        return DEFAULT_MARKET
+        return core.normalize_market(self.config.get("market", DEFAULT_MARKET))
 
     def bing_api_url(self, count=1):
-        count = max(1, min(int(count), 8))
-        return f"{BING_API_BASE}?format=js&idx=0&n={count}&mkt={self.get_market()}"
+        return core.bing_api_url(self.get_market(), count)
 
     def get_latest_release_info(self):
         try:
@@ -304,17 +276,19 @@ class BingTrayApp:
             data = resp.json()
             tag_name = data.get("tag_name", "")
             html_url = data.get("html_url", "")
-            assets = data.get("assets", [])
+            # Accept common naming variants, e.g. InstallBingWallpaper.exe or
+            # InstallBingWallpaper-1.3.5.exe. The SHA-256 comes from GitHub's
+            # asset digest, or from the release notes as a fallback.
+            asset = core.select_installer_asset(data.get("assets", []), data.get("body", ""))
             installer_url = html_url
             installer_name = ""
-            for asset in assets:
-                name = str(asset.get("name", "")).lower()
-                # Accept common naming variants, e.g. InstallBingWallpaper.exe or InstallBingWallpaper-1.3.5.exe.
-                if name.endswith(".exe") and ("installbingwallpaper" in name or "bingwallpaper" in name):
-                    installer_url = asset.get("browser_download_url", html_url)
-                    installer_name = str(asset.get("name", "InstallBingWallpaper.exe"))
-                    log_msg(f"Selected installer asset: {installer_name}")
-                    break
+            installer_sha256 = None
+            if asset:
+                installer_url = asset["url"] or html_url
+                installer_name = asset["name"]
+                installer_sha256 = asset["sha256"]
+                log_msg(f"Selected installer asset: {installer_name}"
+                        + (f" (sha256 {installer_sha256[:12]}...)" if installer_sha256 else " (no checksum published)"))
             if not tag_name:
                 return None
             return {
@@ -322,6 +296,7 @@ class BingTrayApp:
                 "url": installer_url or html_url,
                 "html_url": html_url,
                 "installer_name": installer_name or "InstallBingWallpaper.exe",
+                "sha256": installer_sha256,
             }
         except Exception as e:
             log_msg(f"Update check failed: {e}", "error")
@@ -346,12 +321,32 @@ class BingTrayApp:
         resp = self.session_get(url, timeout=90, proxies=self.get_proxy_dict(), headers=headers, stream=True)
         resp.raise_for_status()
 
-        with open(temp_target, 'wb') as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+        try:
+            with open(temp_target, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
 
-        os.replace(temp_target, target)
+            expected_sha256 = info.get("sha256")
+            if expected_sha256:
+                actual_sha256 = core.sha256_of_file(temp_target)
+                if actual_sha256 != expected_sha256:
+                    raise RuntimeError(
+                        "Installer checksum mismatch: the download does not match the hash published "
+                        f"on GitHub (expected {expected_sha256[:12]}..., got {actual_sha256[:12]}...). "
+                        "The file was discarded."
+                    )
+                log_msg("Installer SHA-256 verified against the release digest.")
+            else:
+                log_msg("No SHA-256 published for this installer; skipping checksum verification.")
+
+            os.replace(temp_target, target)
+        finally:
+            try:
+                if temp_target.exists():
+                    temp_target.unlink()
+            except Exception:
+                pass
         log_msg(f"Installer downloaded successfully: {target}")
         return target
 
@@ -721,7 +716,7 @@ class BingTrayApp:
                 self.config["ca_bundle_path"] = ca_bundle_var.get().strip()
 
                 market = market_var.get().strip()
-                if market and not re.fullmatch(r"[A-Za-z]{2}-[A-Za-z]{2}", market):
+                if market and core.normalize_market(market) != market:
                     raise ValueError("Market must look like en-US")
                 self.config["market"] = market or DEFAULT_MARKET
 
@@ -765,12 +760,7 @@ class BingTrayApp:
         settings_win.bind('<Return>', lambda e: save_settings())
 
     def get_proxy_dict(self):
-        url = self.config.get("proxy_url", "").strip()
-        port = self.config.get("proxy_port", "").strip()
-        if url and port:
-            proxy = f"http://{url}:{port}"
-            return {"http": proxy, "https": proxy}
-        return None
+        return core.build_proxy_dict(self.config.get("proxy_url", ""), self.config.get("proxy_port", ""))
 
     def detect_and_save_proxy(self):
         try:
@@ -802,15 +792,12 @@ class BingTrayApp:
         try:
             resp = self.session_get(pac_url, timeout=5)
             if resp.status_code == 200:
-                match = re.search(r'PROXY\s+([a-zA-Z0-9.-]+:\d+)', resp.text)
-                if match: return match.group(1)
+                return core.extract_pac_proxy(resp.text)
         except Exception: pass
         return None
 
     def parse_proxy_string(self, proxy_str):
-        if not proxy_str: return None, None
-        parts = proxy_str.split(':')
-        return (parts[0], parts[1]) if len(parts) > 1 else (parts[0], "80")
+        return core.parse_proxy_string(proxy_str)
 
     def get_bing_images(self, count=1):
         """Return the latest `count` Bing images, newest first, as dicts with
@@ -819,19 +806,7 @@ class BingTrayApp:
         try:
             resp = self.session_get(self.bing_api_url(count), timeout=10, proxies=self.get_proxy_dict())
             resp.raise_for_status()
-            data = resp.json()
-            entries = []
-            for img_data in data.get("images", []):
-                urlbase = img_data.get("urlbase")
-                date = img_data.get("startdate")
-                if not urlbase or not date:
-                    continue
-                entries.append({
-                    "date": date,
-                    "urls": ["https://www.bing.com" + urlbase + suffix for suffix in IMAGE_RESOLUTION_SUFFIXES],
-                    "title": img_data.get("title") or img_data.get("copyright") or "",
-                })
-            return entries or None
+            return core.parse_bing_images(resp.json()) or None
         except Exception as e:
             log_msg(f"API Fetch Error: {e}", "error")
             return None
@@ -852,7 +827,7 @@ class BingTrayApp:
         on to the next candidate; network errors abort."""
         if isinstance(urls, str):
             urls = [urls]
-        filename = f"bing_{date_str}.jpg"
+        filename = core.image_filename(date_str)
         file_path = IMAGE_DIR / filename
 
         if file_path.exists() and file_path.stat().st_size > 0:
@@ -1012,15 +987,8 @@ try {
         keep_days = self.get_int_setting("keep_images_days", 0, 0, 3650)
         if keep_days <= 0:
             return 0
-        cutoff = datetime.date.today() - datetime.timedelta(days=keep_days)
         removed = 0
-        for img in IMAGE_DIR.glob("bing_*.jpg"):
-            try:
-                img_date = datetime.datetime.strptime(img.stem.split("_")[-1], "%Y%m%d").date()
-            except ValueError:
-                continue
-            if img_date >= cutoff or img == self.current_image_path:
-                continue
+        for img in core.select_old_images(IMAGE_DIR.glob("bing_*.jpg"), keep_days, self.current_image_path):
             try:
                 img.unlink()
                 removed += 1
@@ -1034,18 +1002,13 @@ try {
         """Download any of the given (older) Bing entries that are missing
         locally. Returns the number of images downloaded."""
         keep_days = self.get_int_setting("keep_images_days", 0, 0, 3650)
-        today = datetime.date.today()
         downloaded = 0
         for entry in entries:
             if not self.running:
                 break
-            try:
-                entry_date = datetime.datetime.strptime(entry["date"], "%Y%m%d").date()
-            except ValueError:
+            if not core.within_retention(entry["date"], keep_days):
                 continue
-            if keep_days and (today - entry_date).days >= keep_days:
-                continue
-            file_path = IMAGE_DIR / f"bing_{entry['date']}.jpg"
+            file_path = IMAGE_DIR / core.image_filename(entry["date"])
             if file_path.exists() and file_path.stat().st_size > 0:
                 continue
             if self.download_image(entry["urls"], entry["date"]):
@@ -1081,19 +1044,13 @@ try {
     def _on_check_failed(self, message):
         self.consecutive_failures += 1
         if self.check_interval > 0:
-            index = min(self.consecutive_failures, len(RETRY_BACKOFF_MINUTES)) - 1
-            delay = min(RETRY_BACKOFF_MINUTES[index] * 60, self.check_interval)
+            delay = core.retry_delay_seconds(self.consecutive_failures, self.check_interval)
             self._schedule_next_check(delay)
             log_msg(f"Wallpaper check failed ({self.consecutive_failures} in a row); retrying in {delay // 60} min")
         # Stay quiet for the first few failures (network often is not up yet
         # right after login); toast once when the threshold is reached, and
         # again only if the error changes.
-        if self.consecutive_failures < QUIET_FAILURE_COUNT:
-            notify = False
-        elif self.consecutive_failures == QUIET_FAILURE_COUNT:
-            notify = True
-        else:
-            notify = message != self.last_error
+        notify = core.should_notify_failure(self.consecutive_failures, message, self.last_error)
         self.record_error(message, notify=notify)
 
     def _check_and_update_locked(self, force=False):
