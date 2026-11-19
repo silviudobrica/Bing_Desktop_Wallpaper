@@ -62,8 +62,8 @@ Releases are published by CI when a version tag is pushed. The tag must match `_
 2. Commit, then tag and push:
 
    ```powershell
-   git tag v1.3.8
-   git push origin main v1.3.8
+   git tag v1.3.9
+   git push origin main v1.3.9
    ```
 
 3. The `release` job waits for the tests and the build, verifies that the tag matches `_version.py`, creates the GitHub release named `Bing Daily Wallpaper v<version>` with `RELEASE_NOTES_<version>.md` as its body (GitHub-generated notes if the file is missing), and attaches the CI-built `InstallBingWallpaper.exe` and its `.sha256`. Tags containing a `-` (for example `v1.4.0-beta1`) are marked as pre-releases.
@@ -125,7 +125,7 @@ Wallpaper options (Settings > Wallpaper)
 *   **Bing market:** Region of the daily image, e.g. `en-US`, `de-DE`, `fr-FR`. Default `en-US`.
 *   **Keep images for (days):** Wallpapers older than this are deleted after each check. `0` keeps everything (default). The image currently in use is never deleted.
 *   **Backfill missed days:** Downloads up to 7 recent images you missed while the PC was off, within the retention window. Default `7`, `0` disables.
-*   **Also set the Windows lock screen image:** Off by default. Uses the Windows personalization API as the current user (no admin rights). If your organization enforces a lock screen image by policy, the app detects this and reports it in the status panel instead of silently failing.
+*   **Also set the Windows lock screen image:** Off by default. Uses the Windows lock screen API as the current user (no admin rights). Enabling it switches the lock screen from Windows Spotlight (or a slideshow) to Picture mode, because Windows ignores the picture while Spotlight is active; to go back to Spotlight, untick the option and pick Windows Spotlight again in Settings > Personalization > Lock screen. The change is visible the next time you lock the PC. If your organization enforces a lock screen image by policy, the app detects this and reports it in the status panel instead of silently failing.
 
 The corresponding `config.json` keys are `market`, `keep_images_days`, `backfill_days` and `set_lock_screen`.
 

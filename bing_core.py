@@ -238,6 +238,32 @@ def select_installer_asset(assets, release_body=""):
     return None
 
 
+# Registry values the Settings app writes when the lock screen is switched to
+# "Picture". While Windows Spotlight (RotatingLockScreenEnabled=1) or the
+# slideshow is active, the lock screen ignores the stored picture, so the
+# WinRT call "succeeds" with no visible effect. (hive-relative HKCU subkeys)
+LOCK_SCREEN_PICTURE_MODE_VALUES = [
+    (r"Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "RotatingLockScreenEnabled", 0),
+    (r"Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "RotatingLockScreenOverlayEnabled", 0),
+    (r"Software\Microsoft\Windows\CurrentVersion\Lock Screen", "SlideshowEnabled", 0),
+]
+
+
+def lock_screen_copy_name(image_path, timestamp):
+    """Name for the private copy handed to the lock screen API. Windows refuses
+    to set a lock screen image whose file name equals the previous one, so the
+    name embeds a timestamp and is unique per call."""
+    stem = Path(image_path).stem
+    suffix = Path(image_path).suffix or ".jpg"
+    return f"lockscreen_{stem}_{int(timestamp)}{suffix}"
+
+
+def select_stale_lock_screen_copies(paths, current_path=None):
+    """Copies made by earlier calls; the one in use right now is kept."""
+    current = Path(current_path) if current_path else None
+    return [Path(p) for p in paths if current is None or Path(p) != current]
+
+
 def sha256_of_file(path, chunk_size=1024 * 1024):
     digest = hashlib.sha256()
     with open(path, "rb") as f:

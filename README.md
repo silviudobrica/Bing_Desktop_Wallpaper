@@ -11,7 +11,7 @@ A lightweight Windows system tray application that automatically sets your deskt
 - **System Tray Icon**: Sits quietly in your taskbar. Right-click for Preview/Gallery, Settings, Check Now, Check for Updates, interval control, and Exit.
 - **Settings + Status UI**: Configure interval/proxy/startup in-app and view live health status.
 - **Preview Gallery**: View and re-apply past wallpapers easily.
-- **Lock Screen (optional)**: Also apply the daily image to the Windows lock screen. Not available on PCs where an organization policy enforces the lock screen image.
+- **Lock Screen (optional)**: Also apply the daily image to the Windows lock screen. Enabling it switches the lock screen from Windows Spotlight to Picture mode. Not available on PCs where an organization policy enforces the lock screen image.
 - **Backfill and Fallback**: Downloads wallpapers you missed while the PC was off (up to 7 days) and falls back to 1920x1080 when Bing has no UHD version.
 - **Retention**: Optionally delete wallpapers older than N days to keep the Pictures folder small.
 - **Region**: Choose the Bing market (en-US, de-DE, fr-FR, ...) for the daily image.
