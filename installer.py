@@ -7,12 +7,13 @@ from tkinter import messagebox, ttk
 from pathlib import Path
 import winreg
 import urllib.request
-import re
 import json
 import subprocess
 import time
 import tempfile
 import stat
+
+import bing_core as core
 
 try:
     from _version import __version__ as VERSION
@@ -216,22 +217,17 @@ class SimpleInstaller(tk.Tk):
     def get_proxy_from_pac(self, pac_url):
         try:
             with urllib.request.urlopen(pac_url, timeout=5) as response:
-                content = response.read().decode('utf-8')
-                match = re.search(r'PROXY\s+([a-zA-Z0-9.-]+:\d+)', content)
-                if match: return match.group(1)
+                content = response.read().decode('utf-8', errors='replace')
+                return core.extract_pac_proxy(content)
         except: pass
         return None
 
     def fill_proxy(self, proxy_str):
-        clean = proxy_str.replace("http://", "").replace("https://", "").split("/")[0]
-        if ":" in clean:
-            host, port = clean.split(":")
+        host, port = core.parse_proxy_string(proxy_str)
+        if host:
             self.proxy_host_var.set(host)
             self.proxy_port_var.set(port)
             self.log(f"Detected: {host}:{port}")
-        else:
-            self.proxy_host_var.set(clean)
-            self.proxy_port_var.set("80")
 
     def install(self):
         self.log("Starting installation...")

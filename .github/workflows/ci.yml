@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    name: Lint, checks and unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Compile sources
+        run: python -m py_compile bing_daily_wallpaper.py bing_core.py installer.py generate_version_info.py check_version_sync.py smoke_check.py
+
+      - name: Version metadata in sync
+        run: python check_version_sync.py
+
+      - name: Packaging smoke checks
+        run: python smoke_check.py
+
+      - name: Unit tests
+        run: python -m pytest -q
+
+  build:
+    name: Build installer
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build BingWallpaper.exe and InstallBingWallpaper.exe
+        shell: pwsh
+        run: .\build_installer.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: InstallBingWallpaper
+          path: |
+            dist/InstallBingWallpaper.exe
+            dist/InstallBingWallpaper.exe.sha256
+          if-no-files-found: error

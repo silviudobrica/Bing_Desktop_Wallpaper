@@ -74,8 +74,13 @@ Sign-Executable -ExePath "dist\BingWallpaper.exe"
 Sign-Executable -ExePath "dist\InstallBingWallpaper.exe"
 
 if (Test-Path "dist\InstallBingWallpaper.exe") {
+    # Checksum for the release notes. The in-app updater verifies downloads against
+    # GitHub's asset digest, and falls back to a hash found in the release body.
+    $hash = (Get-FileHash "dist\InstallBingWallpaper.exe" -Algorithm SHA256).Hash.ToLower()
+    "$hash  InstallBingWallpaper.exe" | Out-File -Encoding ascii "dist\InstallBingWallpaper.exe.sha256"
     Write-Host "Build Complete!" -ForegroundColor Green
     Write-Host "Installer: dist\InstallBingWallpaper.exe"
+    Write-Host "SHA-256:   $hash"
 } else {
     Write-Error "Failed to build Installer."
 }

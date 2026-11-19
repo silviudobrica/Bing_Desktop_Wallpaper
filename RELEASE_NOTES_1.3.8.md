@@ -45,6 +45,18 @@ This release adds opt-in lock screen support, backfill of missed days, image ret
 - After a failed check the app retries after 2, 5, 15, 30 and then 60 minutes instead of waiting a full interval.
 - No error notification for the first two consecutive failures, which covers the network not being ready right after login. The status panel still shows the error.
 
+#### Verified update downloads
+- The in-app updater now verifies the downloaded installer against the SHA-256 digest GitHub publishes for the release asset (or a hash in the release notes). A mismatch discards the file and reports an error.
+- `build_installer.ps1` writes `InstallBingWallpaper.exe.sha256` next to the installer for inclusion in release notes.
+
+### Maintenance
+
+- Pure logic moved into `bing_core.py` (version comparison, Bing API parsing, proxy/PAC parsing, retry backoff, retention, installer asset and checksum selection), shared by the app and the installer.
+- New pytest suite in `tests/` (45 tests), wired into the pre-commit hooks.
+- New GitHub Actions workflow: checks and tests on every push/PR, then builds and uploads the installer as an artifact.
+- Dependency pins updated to match current releases: `requests` 2.31.0 -> 2.34.2, `Pillow` 10.2.0 -> 12.1.0 (the old Pillow pin predates the fix for CVE-2024-28219). Build tooling pinned in new `requirements-dev.txt`.
+- Pre-release suffixes such as `1.3.8-beta2` are now compared as `1.3.8` by the update check (previously parsed as `1.3.82`).
+
 ### Other
 
 - The tray "Check Now" action now runs on a daemon thread so it cannot delay application exit.

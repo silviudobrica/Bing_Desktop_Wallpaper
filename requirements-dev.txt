@@ -1,0 +1,5 @@
+# requirements-dev.txt - tools for building and testing (not needed by end users)
+-r requirements.txt
+pyinstaller==6.18.0
+pytest==9.2.0
+pre-commit>=3.7

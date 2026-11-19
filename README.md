@@ -18,6 +18,7 @@ A lightweight Windows system tray application that automatically sets your deskt
 - **Resilient Checks**: After a failed check the app retries with increasing backoff (2 min to 1 h) and stays quiet for the first few failures, so a slow network at login no longer produces error pop-ups.
 - **Windows Polish**: High-DPI awareness, keyboard shortcuts, and executable version metadata.
 - **Smart Logging**: Auto-rotating logs keep your system clean.
+- **Verified Updates**: Downloaded installers are checked against the SHA-256 digest GitHub publishes for the release asset before they run.
 
 ## Keyboard Shortcuts
 - **Esc**: Hide/close active app window.
@@ -32,7 +33,7 @@ A lightweight Windows system tray application that automatically sets your deskt
 
 ## Requirements
 * **End Users:** Windows 10 or 11 (No other software required).
-* **Developers:** Python 3.10+ (Only if running from source or building the installer).
+* **Developers:** Python 3.10+ (Only if running from source or building the installer). Install tooling with `pip install -r requirements-dev.txt`; unit tests run with `python -m pytest`. CI on GitHub Actions runs the checks and builds the installer.
 
 ## Quick Start
 1. Download the latest installer (`InstallBingWallpaper.exe`).

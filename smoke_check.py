@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parent
 
 REQUIRED_FILES = [
     ROOT / "_version.py",
+    ROOT / "bing_core.py",
+    ROOT / "tests" / "test_bing_core.py",
     ROOT / "generate_version_info.py",
     ROOT / "file_version_info.txt",
     ROOT / "BingWallpaper.spec",
