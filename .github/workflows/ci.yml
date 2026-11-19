@@ -64,3 +64,52 @@ jobs:
             dist/InstallBingWallpaper.exe
             dist/InstallBingWallpaper.exe.sha256
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    # Only for version tags, e.g. v1.3.8. Pushing the tag is the one manual step:
+    #   git tag v1.3.8 && git push origin v1.3.8
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches _version.py
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(sed -nE 's/^__version__ *= *["'"'"']([^"'"'"']+)["'"'"'].*/\1/p' _version.py)
+          echo "tag=$tag version=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag v$tag does not match __version__ = $version in _version.py"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          notes="RELEASE_NOTES_${version}.md"
+          if [ -f "$notes" ]; then
+            echo "NOTES_PATH=$notes" >> "$GITHUB_ENV"
+          else
+            echo "::warning::$notes not found; GitHub will generate the release notes"
+            echo "NOTES_PATH=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Download the installer built by the build job
+        uses: actions/download-artifact@v4
+        with:
+          name: InstallBingWallpaper
+          path: dist
+
+      - name: Create release and attach installer
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Bing Daily Wallpaper v${{ env.VERSION }}
+          body_path: ${{ env.NOTES_PATH }}
+          generate_release_notes: ${{ env.NOTES_PATH == '' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/InstallBingWallpaper.exe
+            dist/InstallBingWallpaper.exe.sha256
+          fail_on_unmatched_files: true

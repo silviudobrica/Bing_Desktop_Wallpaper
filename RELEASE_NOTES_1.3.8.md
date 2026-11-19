@@ -53,7 +53,7 @@ This release adds opt-in lock screen support, backfill of missed days, image ret
 
 - Pure logic moved into `bing_core.py` (version comparison, Bing API parsing, proxy/PAC parsing, retry backoff, retention, installer asset and checksum selection), shared by the app and the installer.
 - New pytest suite in `tests/` (45 tests), wired into the pre-commit hooks.
-- New GitHub Actions workflow: checks and tests on every push/PR, then builds and uploads the installer as an artifact.
+- New GitHub Actions workflow: checks and tests on every push/PR, then builds and uploads the installer as an artifact. Pushing a `v*` tag that matches `_version.py` publishes a GitHub release with the CI-built installer and its SHA-256 attached.
 - Dependency pins updated to match current releases: `requests` 2.31.0 -> 2.34.2, `Pillow` 10.2.0 -> 12.1.0 (the old Pillow pin predates the fix for CVE-2024-28219). Build tooling pinned in new `requirements-dev.txt`.
 - Pre-release suffixes such as `1.3.8-beta2` are now compared as `1.3.8` by the update check (previously parsed as `1.3.82`).
 
