@@ -62,8 +62,8 @@ Releases are published by CI when a version tag is pushed. The tag must match `_
 2. Commit, then tag and push:
 
    ```powershell
-   git tag v1.3.10
-   git push origin main v1.3.10
+   git tag v1.4.0
+   git push origin main v1.4.0
    ```
 
 3. The `release` job waits for the tests and the build, verifies that the tag matches `_version.py`, creates the GitHub release named `Bing Daily Wallpaper v<version>` with `RELEASE_NOTES_<version>.md` as its body (GitHub-generated notes if the file is missing), and attaches the CI-built `InstallBingWallpaper.exe` and its `.sha256`. Tags containing a `-` (for example `v1.4.0-beta1`) are marked as pre-releases.
@@ -185,3 +185,31 @@ After building and installing, verify the following:
 *   **Updater:** Use **Check for Updates** from tray or Settings. If a newer release exists, choose automatic download/install.
 *   **Metadata:** In Explorer, open EXE Properties -> Details and confirm Product/File version fields are populated.
 *   **Signing (if configured):** In EXE Properties -> Digital Signatures, verify signature and timestamp are present.
+
+Linux (Flatpak)
+---------------
+
+The Linux app (`bing_qt_app.py`, PySide6) is the same application on a different desktop layer:
+
+| Layer | Windows | Linux |
+| --- | --- | --- |
+| Shared logic | `bing_core.py`, `bing_service.py` | same files |
+| Desktop integration | `platform_windows.py` | `platform_linux.py` |
+| UI | Tk + pystray (`bing_daily_wallpaper.py`) | PySide6 (`bing_qt_app.py`) |
+| Packaging | PyInstaller + installer | Flatpak (`flatpak/`) |
+
+*   **Files:** config in `~/.var/app/io.github.silviudobrica.BingWallpaper/config/bing-wallpaper/config.json` (or `~/.config/bing-wallpaper/` outside Flatpak), logs under the matching `data/bing-wallpaper/logs/`, wallpapers in `~/Pictures/Bing` (the XDG Pictures folder).
+*   **Wallpaper and lock screen:** KDE Plasma gets the wallpaper through `org.kde.plasmashell` scripting and the lock screen through `kscreenlockerrc`. GNOME uses gsettings outside Flatpak and the XDG Wallpaper portal inside it (one portal call sets both background and lock screen). Other desktops use the portal; if it has no wallpaper backend the status panel reports it.
+*   **Proxy:** before every request the app asks the XDG ProxyResolver portal for the proxy of that URL, then falls back to `~/.config/kioslaverc` (manual, PAC and environment-variable modes), GNOME's `org.gnome.system.proxy`, and finally `http_proxy`/`https_proxy`. Nothing is cached, so changing the system proxy takes effect immediately. The Settings proxy fields override all of this.
+*   **Startup:** Settings > Run at Startup asks the Background portal for autostart (`bing-wallpaper --hidden`); outside Flatpak it writes `~/.config/autostart/io.github.silviudobrica.BingWallpaper.desktop`.
+*   **Tray:** StatusNotifier, shown by Plasma out of the box. On GNOME without a tray extension the window stays visible and closing it quits the app.
+*   **Updates:** a Flatpak cannot install its own update. "Check for Updates" compares with the latest GitHub release and opens the release page; once the app is on Flathub, Discover and `flatpak update` deliver updates automatically.
+
+Build locally (needs `flatpak-builder` and the Flathub remote for `org.kde.Sdk//6.11` and `io.qt.PySide.BaseApp//6.11`):
+
+```
+flatpak-builder --user --install --force-clean build-dir flatpak/io.github.silviudobrica.BingWallpaper.yml
+flatpak run io.github.silviudobrica.BingWallpaper
+```
+
+CI builds `BingWallpaper.flatpak` on every push (artifact) and attaches it to the GitHub release on a `v*` tag, next to the Windows installer. After changing `flatpak/requirements-flatpak.txt`, regenerate `flatpak/python3-requirements.json` with `flatpak-pip-generator`.

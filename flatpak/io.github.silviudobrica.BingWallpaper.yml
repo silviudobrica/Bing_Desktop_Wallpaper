@@ -1,0 +1,65 @@
+# Flatpak manifest for the Linux (KDE-first) app.
+#
+# Local build (needs flatpak-builder and the Flathub remote):
+#   flatpak-builder --user --install --force-clean build-dir flatpak/io.github.silviudobrica.BingWallpaper.yml
+# CI builds a single-file bundle (BingWallpaper.flatpak) from this manifest.
+# For a Flathub submission, replace the `dir` source of the app module with a
+# `git` source pointing at the release tag.
+app-id: io.github.silviudobrica.BingWallpaper
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+# PySide6 built against the runtime's Qt, so Breeze and the Plasma
+# integration plugins load and the app looks native on KDE.
+base: io.qt.PySide.BaseApp
+base-version: '6.11'
+command: bing-wallpaper
+separate-locales: false
+
+build-options:
+  env:
+    - BASEAPP_REMOVE_WEBENGINE=1
+    - BASEAPP_DISABLE_NUMPY=1
+
+cleanup-commands:
+  - /app/cleanup-BaseApp.sh
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # Wallpapers live in the user's Pictures folder, at the same path inside
+  # and outside the sandbox, so plasmashell and the lock screen can read them.
+  - --filesystem=xdg-pictures/Bing:create
+  # KDE lock screen image (written with the image plugin pointed at the file).
+  - --filesystem=xdg-config/kscreenlockerrc
+  # KDE proxy settings, read only when the ProxyResolver portal has no answer.
+  - --filesystem=xdg-config/kioslaverc:ro
+  # Set the Plasma wallpaper silently through the shell scripting interface;
+  # other desktops go through the Wallpaper portal, which needs no permission.
+  - --talk-name=org.kde.plasmashell
+  # Tray icon (StatusNotifier).
+  - --talk-name=org.kde.StatusNotifierWatcher
+
+modules:
+  - python3-requirements.json
+
+  - name: bing-wallpaper
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 -t /app/lib/bing-wallpaper/ _version.py bing_core.py bing_service.py platform_linux.py bing_qt_app.py
+      - install -Dm755 flatpak/bing-wallpaper /app/bin/bing-wallpaper
+      - install -Dm644 flatpak/io.github.silviudobrica.BingWallpaper.desktop -t /app/share/applications/
+      - install -Dm644 flatpak/io.github.silviudobrica.BingWallpaper.metainfo.xml -t /app/share/metainfo/
+      - install -Dm644 flatpak/io.github.silviudobrica.BingWallpaper.svg -t /app/share/icons/hicolor/scalable/apps/
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - dist
+          - build
+          - build-dir
+          - .flatpak-builder

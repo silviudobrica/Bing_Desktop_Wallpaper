@@ -18,6 +18,26 @@ A lightweight Windows system tray application that automatically sets your deskt
 - **Resilient Checks**: After a failed check the app retries with increasing backoff (2 min to 1 h) and stays quiet for the first few failures, so a slow network at login no longer produces error pop-ups.
 - **Windows Polish**: High-DPI awareness, keyboard shortcuts, and executable version metadata.
 - **Smart Logging**: Auto-rotating logs keep your system clean.
+
+## Linux (KDE Plasma, GNOME) as a Flatpak
+
+The same app, with the same window, settings and tray menu, is available for Linux as a Flatpak built with PySide6 on the KDE runtime. It shares `bing_core.py` and `bing_service.py` with the Windows app; only the desktop integration differs (`platform_linux.py`).
+
+- **Wallpaper**: KDE Plasma through the shell's scripting interface (silent); GNOME and other desktops through the XDG Wallpaper portal (the desktop may ask once).
+- **Lock screen**: KDE through `kscreenlockerrc`; GNOME through gsettings or the portal.
+- **Proxies**: the system proxy is looked up before every request through the XDG ProxyResolver portal, then KDE's `kioslaverc`, GNOME's gsettings and the environment, so a changed proxy is used by the very next download. An explicit proxy in Settings still wins.
+- **Autostart**: the XDG Background portal (Settings > Run at Startup).
+- **Updates**: Flatpak apps are updated by Discover / GNOME Software / `flatpak update`, not by the app. "Check for Updates" tells you when a newer release exists and opens its page.
+
+Install the bundle attached to a release (`BingWallpaper.flatpak`), or run from a checkout:
+
+```
+flatpak install --user BingWallpaper.flatpak
+# or, without Flatpak:
+python3 -m venv .venv && .venv/bin/pip install -r requirements-linux.txt && .venv/bin/python bing_qt_app.py
+```
+
+See [WALKTHROUGH.md](WALKTHROUGH.md#linux-flatpak) for details and the manifest in `flatpak/`.
 - **Verified Updates**: Downloaded installers are checked against the SHA-256 digest GitHub publishes for the release asset before they run.
 
 ## Keyboard Shortcuts

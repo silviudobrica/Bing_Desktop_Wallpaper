@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.silviudobrica.BingWallpaper</id>
+  <name>Bing Wallpaper</name>
+  <summary>Bing's image of the day as your wallpaper</summary>
+  <developer id="io.github.silviudobrica">
+    <name>Silviu Dobrica</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <description>
+    <p>
+      Downloads the Bing image of the day and sets it as the desktop wallpaper,
+      optionally on the lock screen too. Runs quietly in the system tray, checks
+      on an interval you choose, backfills the days the computer was off and can
+      keep only the last N days of images.
+    </p>
+    <p>
+      On KDE Plasma the wallpaper is set directly through the shell; on GNOME
+      and other desktops through the XDG Wallpaper portal. System proxy settings
+      are honoured and re-read before every download.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.silviudobrica.BingWallpaper.desktop</launchable>
+  <url type="homepage">https://github.com/silviudobrica/Bing_Desktop_Wallpaper</url>
+  <url type="bugtracker">https://github.com/silviudobrica/Bing_Desktop_Wallpaper/issues</url>
+  <url type="vcs-browser">https://github.com/silviudobrica/Bing_Desktop_Wallpaper</url>
+  <content_rating type="oars-1.1"/>
+  <branding>
+    <color type="primary" scheme_preference="light">#0078d7</color>
+    <color type="primary" scheme_preference="dark">#1b3a5c</color>
+  </branding>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">620</display_length>
+  </requires>
+  <screenshots>
+    <!-- Replace with a real screenshot URL before a Flathub submission. -->
+    <screenshot type="default">
+      <caption>Status, current wallpaper and the latest images</caption>
+      <image>https://raw.githubusercontent.com/silviudobrica/Bing_Desktop_Wallpaper/main/flatpak/screenshot-main.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="1.4.0" date="2026-11-19">
+      <description>
+        <p>First Linux release: KDE Plasma and GNOME wallpaper and lock screen, system proxy support, Flatpak packaging.</p>
+      </description>
+    </release>
+  </releases>
+</component>

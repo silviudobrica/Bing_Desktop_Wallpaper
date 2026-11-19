@@ -2,33 +2,27 @@
 import os
 import sys
 import ctypes
-import requests
 import datetime
 import time
 import threading
 import logging
-import json
 import subprocess
 import webbrowser
 import tempfile
-import shutil
-import base64
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from PIL import Image, ImageTk, UnidentifiedImageError
 import pystray
 from pystray import MenuItem as item
 import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox, filedialog
-import winreg
-import re
 from requests.exceptions import SSLError
 import bing_core as core
 from bing_core import (
     DEFAULT_MARKET, MARKET_PRESETS, MAX_BACKFILL_DAYS,
 )
+from bing_service import WallpaperService, INTERVAL_PRESETS, RELEASES_API, log_msg
+from platform_windows import WindowsPlatform
 
 def check_single_instance():
     mutex_name = "Local\\BingWallpaperTrayAppMutex"
@@ -43,20 +37,14 @@ def check_single_instance():
         sys.exit(0)
     return mutex # Keep a reference so it isn't garbage collected
 
-# Windows constants
-SPI_SETDESKWALLPAPER = 0x0014 # 20
-SPIF_UPDATEINIFILE = 0x01
-SPIF_SENDWININICHANGE = 0x02
-
 # Import centralized version
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.3.10"
+    VERSION = "1.4.0"
 
 # Configuration
 # Bing API, retry and retention constants live in bing_core.py.
-RELEASES_API = "https://api.github.com/repos/SilviuDobrica/Bing_Desktop_Wallpaper/releases/latest"
 APP_NAME = "BingWallpaper"
 
 # Paths
@@ -79,66 +67,32 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - [%(threadName)s] - %(message)s'
 )
 
-# Interval presets
-INTERVAL_PRESETS = {
-    "15 Minutes": 15,
-    "30 Minutes": 30,
-    "1 Hour": 60,
-    "4 Hours": 240,
-    "6 Hours": 360,
-    "12 Hours": 720,
-    "24 Hours": 1440,
-    "Disabled": 0
-}
+class BingTrayApp(WallpaperService):
+    """Windows tray front end. All download/backfill/retention/config logic
+    lives in WallpaperService; this class adds Tk, pystray and the updater."""
 
-def log_msg(msg, level="info"):
-    print(msg)
-    if level == "error":
-        logging.error(msg)
-    else:
-        logging.info(msg)
-
-class BingTrayApp:
     def __init__(self):
         self.icon = None
         self.root = None
-        self.last_check = 0
-        self._next_check_at = 0
-        self.consecutive_failures = 0
-        self.current_image_path = None
-        self.running = True
-        self.session = self._create_retry_session()
-        self.last_success = 0
-        self.last_error = "None"
-        self.last_error_time = 0
-        self.last_status_message = "Waiting for first check"
         self.status_vars = {}
-        self.last_update_check = 0
-        self.latest_release_url = None
-        self.latest_release_version = None
         self.update_in_progress = False
         self._refresh_preview_ui = None
         self._render_gallery_page = None
-        # Serializes wallpaper checks so startup, Check Now, F5 and the interval
-        # loop never download the same image concurrently.
-        self._check_lock = threading.Lock()
-        self.cleanup_partial_downloads()
+        platform = WindowsPlatform(
+            DATA_DIR, STARTUP_SHORTCUT,
+            script_path=None if getattr(sys, 'frozen', False) else Path(__file__),
+        )
+        super().__init__(platform, CONFIG_FILE, IMAGE_DIR, APP_NAME, VERSION)
 
-        self.config = self.load_config()
-        interval_minutes = self.config.get("check_interval_minutes", 720)
-        self.check_interval = interval_minutes * 60 if interval_minutes > 0 else 0
-        
-        log_msg(f"Initializing Bing Wallpaper App v{VERSION}")
-        
-        if not self.config.get("proxy_url"):
-            self.detect_and_save_proxy()
+    # ---- service hooks (may be called from worker threads)
+    def on_state_changed(self):
+        self.update_status_panel()
 
-    def _create_retry_session(self):
-        session = requests.Session()
-        retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-        session.mount('http://', HTTPAdapter(max_retries=retries))
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        return session
+    def on_wallpaper_applied(self, image_path):
+        self.update_tray_icon(image_path)
+
+    def on_images_changed(self):
+        self.run_on_ui_thread(self._refresh_preview_if_visible)
 
     def enable_high_dpi(self):
         try:
@@ -160,53 +114,6 @@ class BingTrayApp:
         window.bind('<Control-comma>', lambda e: self.show_settings_window())
         window.bind('<F5>', lambda e: threading.Thread(target=self.check_and_update, args=(True,), daemon=True).start())
 
-    def get_verify_option(self):
-        ca_bundle_path = str(self.config.get("ca_bundle_path", "")).strip()
-        if not ca_bundle_path:
-            return True
-        if Path(ca_bundle_path).exists():
-            return ca_bundle_path
-        log_msg(f"Configured CA bundle path not found: {ca_bundle_path}", "error")
-        return True
-
-    def session_get(self, url, **kwargs):
-        kwargs.setdefault("verify", self.get_verify_option())
-        return self.session.get(url, **kwargs)
-
-    def load_config(self):
-        try:
-            if CONFIG_FILE.exists():
-                with open(CONFIG_FILE, 'r') as f:
-                    return json.load(f)
-        except Exception as e:
-            log_msg(f"Error loading config: {e}", "error")
-        return {}
-
-    def save_config(self):
-        # Write to a sibling temp file and atomically replace, so a crash or
-        # power loss mid-write never leaves a truncated config.json behind.
-        temp_path = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
-        try:
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, CONFIG_FILE)
-        except Exception as e:
-            log_msg(f"Error saving config: {e}", "error")
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except Exception:
-                pass
-
-    def format_ts(self, timestamp):
-        if not timestamp:
-            return "Never"
-        return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-
-    def is_newer_version(self, candidate):
-        return core.is_newer_version(candidate, VERSION)
 
     def notify_user(self, title, message):
         try:
@@ -243,29 +150,6 @@ class BingTrayApp:
         self.status_vars["startup"].set("Enabled" if self.is_startup_enabled() else "Disabled")
         self.status_vars["status"].set(self.last_status_message)
 
-    def record_error(self, message, notify=None):
-        """Record a failure. notify=None toasts only when the message changed;
-        True/False force or suppress the toast."""
-        previous = self.last_error
-        self.last_error = message
-        self.last_error_time = time.time()
-        self.last_status_message = "Last operation failed"
-        self.update_status_panel()
-        if notify is None:
-            notify = message != previous
-        if notify:
-            self.notify_user("Bing Wallpaper", f"Operation failed: {message}")
-        else:
-            log_msg(f"Operation failed (notification suppressed): {message}")
-
-    def get_int_setting(self, key, default, minimum, maximum):
-        return core.clamp_int(self.config.get(key, default), default, minimum, maximum)
-
-    def get_market(self):
-        return core.normalize_market(self.config.get("market", DEFAULT_MARKET))
-
-    def bing_api_url(self, count=1):
-        return core.bing_api_url(self.get_market(), count)
 
     def get_latest_release_info(self):
         try:
@@ -408,7 +292,8 @@ class BingTrayApp:
         except Exception as e:
             self.record_error(f"Update install failed: {e}")
             if self.root:
-                self.root.after(0, lambda: messagebox.showerror("Update", f"Failed to install update: {e}"))
+                detail = str(e)
+                self.root.after(0, lambda: messagebox.showerror("Update", f"Failed to install update: {detail}"))
         finally:
             self.update_in_progress = False
 
@@ -463,40 +348,6 @@ class BingTrayApp:
             self.last_status_message = f"Up to date: v{VERSION}"
             self.update_status_panel()
 
-    def is_startup_enabled(self):
-        return STARTUP_SHORTCUT.exists()
-
-    def set_startup_enabled(self, enabled):
-        try:
-            if enabled:
-                target = Path(sys.executable) if getattr(sys, 'frozen', False) else Path(sys.executable)
-                startup_dir = STARTUP_SHORTCUT.parent
-                startup_dir.mkdir(parents=True, exist_ok=True)
-
-                args = ""
-                if not getattr(sys, 'frozen', False):
-                    args = f'"{str(Path(__file__).resolve())}"'
-
-                ps_script = f"""
-                $ws = New-Object -ComObject WScript.Shell
-                $s = $ws.CreateShortcut('{str(STARTUP_SHORTCUT)}')
-                $s.TargetPath = '{str(target)}'
-                $s.WorkingDirectory = '{str(DATA_DIR)}'
-                $s.Arguments = '{args}'
-                $s.Save()
-                """
-                subprocess.run(["powershell", "-Command", ps_script], check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            else:
-                if STARTUP_SHORTCUT.exists():
-                    STARTUP_SHORTCUT.unlink()
-        except Exception as e:
-            self.record_error(f"Startup toggle failed: {e}")
-
-    def open_path(self, path):
-        try:
-            os.startfile(path)
-        except Exception as e:
-            self.record_error(f"Unable to open path: {e}")
 
     def test_https_connectivity(self):
         endpoints = [
@@ -526,25 +377,11 @@ class BingTrayApp:
             if self.root:
                 self.root.after(0, lambda: messagebox.showwarning("HTTPS Test", full_msg))
 
-    def detect_proxy_values(self):
-        pac_url = self.get_pac_url_from_registry()
-        if not pac_url:
-            return "", ""
-        proxy = self.get_proxy_from_pac(pac_url)
-        if not proxy:
-            return "", ""
-        host, port = self.parse_proxy_string(proxy)
-        return host or "", port or ""
 
     def set_interval(self, minutes, label):
         try:
             log_msg(f"Setting interval to: {label} ({minutes} minutes)")
-            self.config["check_interval_minutes"] = minutes
-            self.save_config()
-            
-            self.check_interval = minutes * 60 if minutes > 0 else 0
-            self._next_check_at = 0  # run a check right away
-            
+            WallpaperService.set_interval(self, minutes)
             if self.icon:
                 self.icon.menu = self.create_menu()
         except Exception as e:
@@ -763,343 +600,6 @@ class BingTrayApp:
         ttk.Button(btn_row, text="Save", command=save_settings).pack(side=tk.RIGHT, padx=(0, 8))
         settings_win.bind('<Return>', lambda e: save_settings())
 
-    def get_proxy_dict(self):
-        return core.build_proxy_dict(self.config.get("proxy_url", ""), self.config.get("proxy_port", ""))
-
-    def detect_and_save_proxy(self):
-        try:
-            pac_url = self.get_pac_url_from_registry()
-            if pac_url:
-                proxy = self.get_proxy_from_pac(pac_url)
-                if proxy:
-                    host, port = self.parse_proxy_string(proxy)
-                    if host:
-                        self.config['proxy_url'] = host
-                        self.config['proxy_port'] = port
-                        self.save_config()
-        except Exception: pass
-
-    def get_pac_url_from_registry(self):
-        locations = [
-            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
-            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"),
-        ]
-        for hive, subkey in locations:
-            try:
-                with winreg.OpenKey(hive, subkey) as key:
-                    pac_url, _ = winreg.QueryValueEx(key, "AutoConfigURL")
-                    if pac_url: return pac_url
-            except Exception: continue
-        return None
-
-    def get_proxy_from_pac(self, pac_url):
-        try:
-            resp = self.session_get(pac_url, timeout=5)
-            if resp.status_code == 200:
-                return core.extract_pac_proxy(resp.text)
-        except Exception: pass
-        return None
-
-    def parse_proxy_string(self, proxy_str):
-        return core.parse_proxy_string(proxy_str)
-
-    def get_bing_images(self, count=1):
-        """Return the latest `count` Bing images, newest first, as dicts with
-        'date' (YYYYMMDD), 'urls' (candidate download URLs, best first) and
-        'title'. Returns None on failure."""
-        try:
-            resp = self.session_get(self.bing_api_url(count), timeout=10, proxies=self.get_proxy_dict())
-            resp.raise_for_status()
-            return core.parse_bing_images(resp.json()) or None
-        except Exception as e:
-            log_msg(f"API Fetch Error: {e}", "error")
-            return None
-
-    def cleanup_partial_downloads(self):
-        """Remove leftover temp files from interrupted or failed downloads."""
-        for pattern in ("bing_*.tmp", "bing_*.part"):
-            for leftover in IMAGE_DIR.glob(pattern):
-                try:
-                    leftover.unlink()
-                    log_msg(f"Removed stale partial download: {leftover.name}")
-                except Exception as e:
-                    log_msg(f"Could not remove stale partial download {leftover.name}: {e}", "error")
-
-    def download_image(self, urls, date_str):
-        """Download the image for date_str, trying each URL in `urls` in order
-        (a str is accepted too). A 404, wrong content type or corrupt file moves
-        on to the next candidate; network errors abort."""
-        if isinstance(urls, str):
-            urls = [urls]
-        filename = core.image_filename(date_str)
-        file_path = IMAGE_DIR / filename
-
-        if file_path.exists() and file_path.stat().st_size > 0:
-            return file_path
-
-        # Unique per process/thread so two downloads can never collide on the
-        # same temp file (this was the source of WinError 32 sharing violations).
-        temp_path = IMAGE_DIR / f"{filename}.{os.getpid()}.{threading.get_ident()}.part"
-        try:
-            for index, url in enumerate(urls):
-                resp = self.session_get(url, timeout=30, proxies=self.get_proxy_dict(), stream=True)
-                if resp.status_code == 404 and index < len(urls) - 1:
-                    log_msg(f"Not available at this resolution, trying next: {url}")
-                    continue
-                resp.raise_for_status()
-
-                content_type = resp.headers.get('Content-Type', '')
-                if 'image' not in content_type:
-                    log_msg(f"Download Error: unexpected Content-Type '{content_type}' for {url}", "error")
-                    continue
-
-                with open(temp_path, 'wb') as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
-
-                try:
-                    with Image.open(temp_path) as img:
-                        img.verify()
-                except Exception as e:
-                    log_msg(f"Downloaded image failed verification ({url}): {e}", "error")
-                    continue
-
-                os.replace(temp_path, file_path)
-                return file_path
-
-            log_msg(f"Download Error: no usable image found for {date_str}", "error")
-            return None
-
-        except Exception as e:
-            # If another check finished the same image meanwhile, use it.
-            if file_path.exists() and file_path.stat().st_size > 0:
-                return file_path
-            log_msg(f"Download Error: {e}", "error")
-            return None
-        finally:
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except Exception:
-                pass
-
-    def set_wallpaper(self, image_path):
-        if not image_path or not image_path.exists():
-            return
-        try:
-            log_msg(f"Setting wallpaper: {image_path.name}")
-            ctypes.windll.user32.SystemParametersInfoW(
-                SPI_SETDESKWALLPAPER,
-                0,
-                str(image_path),
-                SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE
-            )
-            self.current_image_path = image_path
-            self.update_tray_icon(image_path)
-            if self.config.get("set_lock_screen", False):
-                self.apply_lock_screen(image_path)
-        except Exception as e:
-            log_msg(f"Wallpaper Set Error: {e}", "error")
-
-    # PowerShell bridge to the WinRT lock screen API. This runs as the current
-    # user, needs no admin rights and no extra Python packages.
-    #
-    # LockScreen.SetImageFileAsync is the call that works from an unpackaged
-    # process (every known working script uses it). The newer
-    # UserProfilePersonalizationSettings.TrySetLockScreenImageAsync is kept as
-    # a fallback only. The script contains no double quotes and is passed with
-    # -EncodedCommand, so no command-line quoting can break it.
-    LOCK_SCREEN_SCRIPT = r"""
-$ErrorActionPreference = 'Stop'
-$imagePath = '__IMAGE_PATH__'
-try {
-    [Windows.System.UserProfile.LockScreen,Windows.System.UserProfile,ContentType=WindowsRuntime] | Out-Null
-    [Windows.System.UserProfile.UserProfilePersonalizationSettings,Windows.System.UserProfile,ContentType=WindowsRuntime] | Out-Null
-    [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime] | Out-Null
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime
-    $methods = [System.WindowsRuntimeSystemExtensions].GetMethods() |
-        Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 }
-    $asTaskGeneric = $methods | Where-Object { $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
-    $asTaskAction = $methods | Where-Object { $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction' } | Select-Object -First 1
-    function Await($op, $type) {
-        $task = $asTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op))
-        $task.Wait(-1) | Out-Null
-        return $task.Result
-    }
-    function AwaitAction($op) {
-        $task = $asTaskAction.Invoke($null, @($op))
-        $task.Wait(-1) | Out-Null
-    }
-    function InnerMessage($err) {
-        $ex = $err.Exception
-        while ($ex.InnerException) { $ex = $ex.InnerException }
-        return $ex.Message
-    }
-    $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($imagePath)) ([Windows.Storage.StorageFile])
-    $method = ''
-    $firstError = ''
-    try {
-        AwaitAction ([Windows.System.UserProfile.LockScreen]::SetImageFileAsync($file))
-        $method = 'LockScreen.SetImageFileAsync'
-    } catch {
-        $firstError = InnerMessage $_
-    }
-    if (-not $method) {
-        if (-not [Windows.System.UserProfile.UserProfilePersonalizationSettings]::IsSupported()) {
-            [Console]::Error.WriteLine('LockScreen API failed (' + $firstError + ') and lock screen personalization is not supported on this Windows edition.')
-            exit 2
-        }
-        $ok = Await ([Windows.System.UserProfile.UserProfilePersonalizationSettings]::Current.TrySetLockScreenImageAsync($file)) ([bool])
-        if (-not $ok) {
-            [Console]::Error.WriteLine('Windows refused the lock screen image (' + $firstError + '; blocked by policy, or unsupported format).')
-            exit 3
-        }
-        $method = 'UserProfilePersonalizationSettings.TrySetLockScreenImageAsync'
-    }
-    Write-Output $method
-    exit 0
-} catch {
-    [Console]::Error.WriteLine((InnerMessage $_))
-    exit 1
-}
-"""
-
-    def lock_screen_policy_source(self):
-        """Return a description of the policy forcing the lock screen image, or
-        None when the user is free to change it. Managed (corporate) machines
-        commonly pin the lock screen; WinRT then refuses our image."""
-        checks = [
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Windows\Personalization", "LockScreenImage"),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Microsoft\Windows\Personalization", "NoChangingLockScreen"),
-            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Policies\Microsoft\Windows\Personalization", "NoChangingLockScreen"),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP", "LockScreenImagePath"),
-        ]
-        for hive, subkey, value_name in checks:
-            try:
-                with winreg.OpenKey(hive, subkey) as key:
-                    value, _ = winreg.QueryValueEx(key, value_name)
-                    if value:
-                        return f"{value_name} policy ({value})"
-            except OSError:
-                continue
-        return None
-
-    def switch_lock_screen_to_picture_mode(self):
-        """Turn off Windows Spotlight and the slideshow for the current user so
-        the picture we set is what the lock screen actually shows. Writes only
-        HKCU values the Settings app itself writes when "Picture" is chosen.
-        Returns the names of the values that were changed."""
-        changed = []
-        for subkey, value_name, wanted in core.LOCK_SCREEN_PICTURE_MODE_VALUES:
-            try:
-                with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
-                    try:
-                        current, _ = winreg.QueryValueEx(key, value_name)
-                    except OSError:
-                        current = None
-                    if current == wanted:
-                        continue
-                    if current is None and value_name == "SlideshowEnabled":
-                        continue  # absent means off; do not create it
-                    winreg.SetValueEx(key, value_name, 0, winreg.REG_DWORD, wanted)
-                    changed.append(value_name)
-            except OSError as e:
-                log_msg(f"Could not update lock screen mode value {value_name}: {e}", "error")
-        if changed:
-            log_msg(f"Lock screen switched to Picture mode ({', '.join(changed)} set to 0)")
-        return changed
-
-    def prepare_lock_screen_copy(self, image_path):
-        """Copy the wallpaper under a unique name. Windows refuses to set a lock
-        screen image whose file name matches the previously set one, and
-        "Check Now" re-applies the same bing_<date>.jpg; a fresh copy per call
-        avoids that. Older copies are removed, the new one is kept until the
-        next call so Windows can finish reading it."""
-        copy_dir = DATA_DIR / "lockscreen"
-        copy_dir.mkdir(parents=True, exist_ok=True)
-        copy_path = copy_dir / core.lock_screen_copy_name(image_path, time.time())
-        shutil.copyfile(image_path, copy_path)
-        for stale in core.select_stale_lock_screen_copies(copy_dir.glob("lockscreen_*"), copy_path):
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-        return copy_path
-
-    def apply_lock_screen(self, image_path):
-        """Set the lock screen image. Never blocks the Tk thread."""
-        if threading.current_thread() is threading.main_thread():
-            threading.Thread(target=self._set_lock_screen_blocking, args=(image_path,), daemon=True).start()
-        else:
-            self._set_lock_screen_blocking(image_path)
-
-    def _set_lock_screen_blocking(self, image_path):
-        policy = self.lock_screen_policy_source()
-        if policy:
-            self.record_error(f"Lock screen is managed by your organization ({policy}); the app cannot change it")
-            return False
-        try:
-            self.switch_lock_screen_to_picture_mode()
-            copy_path = self.prepare_lock_screen_copy(Path(image_path))
-            script = self.LOCK_SCREEN_SCRIPT.replace("__IMAGE_PATH__", str(copy_path).replace("'", "''"))
-            encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-                capture_output=True, text=True, timeout=90,
-                stdin=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            if result.returncode == 0:
-                method = (result.stdout or "").strip().splitlines()
-                method = method[-1] if method else "WinRT"
-                log_msg(f"Lock screen updated: {Path(image_path).name} via {method}")
-                return True
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            detail = detail[0] if detail else f"exit code {result.returncode}"
-            self.record_error(f"Lock screen update failed: {detail}")
-        except Exception as e:
-            self.record_error(f"Lock screen update failed: {e}")
-        return False
-
-    def latest_local_image(self):
-        """Most recent downloaded wallpaper on disk, or None."""
-        images = core.sort_images_newest_first(IMAGE_DIR.glob("bing_*.jpg"), os.path.getmtime)
-        return images[0] if images else None
-
-    def cleanup_old_images(self):
-        """Delete wallpapers older than keep_images_days (0 = keep forever).
-        The image currently in use is never deleted."""
-        keep_days = self.get_int_setting("keep_images_days", 0, 0, 3650)
-        if keep_days <= 0:
-            return 0
-        removed = 0
-        for img in core.select_old_images(IMAGE_DIR.glob("bing_*.jpg"), keep_days, self.current_image_path):
-            try:
-                img.unlink()
-                removed += 1
-            except Exception as e:
-                log_msg(f"Could not delete old wallpaper {img.name}: {e}", "error")
-        if removed:
-            log_msg(f"Retention: removed {removed} wallpaper(s) older than {keep_days} days")
-        return removed
-
-    def backfill_images(self, entries):
-        """Download any of the given (older) Bing entries that are missing
-        locally. Returns the number of images downloaded."""
-        keep_days = self.get_int_setting("keep_images_days", 0, 0, 3650)
-        downloaded = 0
-        for entry in entries:
-            if not self.running:
-                break
-            if not core.within_retention(entry["date"], keep_days):
-                continue
-            file_path = IMAGE_DIR / core.image_filename(entry["date"])
-            if file_path.exists() and file_path.stat().st_size > 0:
-                continue
-            if self.download_image(entry["urls"], entry["date"]):
-                downloaded += 1
-                log_msg(f"Backfilled missed wallpaper: {file_path.name}")
-        return downloaded
 
     def update_tray_icon(self, image_path):
         if self.icon:
@@ -1110,91 +610,11 @@ try {
                     self.icon.icon = thumb
             except Exception: pass
 
-    def check_and_update(self, force=False):
-        if not self._check_lock.acquire(blocking=False):
-            log_msg("Wallpaper check already in progress; skipping duplicate request.")
-            return
-        try:
-            self._check_and_update_locked(force)
-        finally:
-            self._check_lock.release()
 
     def _refresh_preview_if_visible(self):
         if self.root and self.root.winfo_viewable():
             self.setup_ui(self.root)
 
-    def _schedule_next_check(self, seconds):
-        self._next_check_at = time.time() + max(0, seconds)
-
-    def _on_check_failed(self, message):
-        self.consecutive_failures += 1
-        if self.check_interval > 0:
-            delay = core.retry_delay_seconds(self.consecutive_failures, self.check_interval)
-            self._schedule_next_check(delay)
-            log_msg(f"Wallpaper check failed ({self.consecutive_failures} in a row); retrying in {delay // 60} min")
-        # Stay quiet for the first few failures (network often is not up yet
-        # right after login); toast once when the threshold is reached, and
-        # again only if the error changes.
-        notify = core.should_notify_failure(self.consecutive_failures, message, self.last_error)
-        self.record_error(message, notify=notify)
-
-    def _check_and_update_locked(self, force=False):
-        self.last_check = time.time()
-        try:
-            backfill_days = self.get_int_setting("backfill_days", MAX_BACKFILL_DAYS, 0, MAX_BACKFILL_DAYS)
-            images = self.get_bing_images(1 + backfill_days)
-            if not images:
-                self._on_check_failed("No image info returned from Bing API")
-                return
-
-            today = images[0]
-            path = self.download_image(today["urls"], today["date"])
-            if not path:
-                self._on_check_failed("Image download failed")
-                return
-
-            if force or self.current_image_path != path:
-                self.set_wallpaper(path)
-                self.last_status_message = f"Wallpaper updated: {path.name}"
-                self.notify_user("Bing Wallpaper", f"Wallpaper updated: {path.name}")
-            elif self.icon and self.icon.icon is None:
-                self.update_tray_icon(path)
-                self.last_status_message = f"Wallpaper available: {path.name}"
-
-            self.last_success = time.time()
-            self.last_error = "None"
-            self.last_error_time = 0
-            self.consecutive_failures = 0
-            self._schedule_next_check(self.check_interval)
-
-            self.run_on_ui_thread(self._refresh_preview_if_visible)
-            self.update_status_panel()
-
-            # Housekeeping after today's wallpaper is in place.
-            changed = self.backfill_images(images[1:])
-            changed += self.cleanup_old_images()
-            if changed:
-                self.run_on_ui_thread(self._refresh_preview_if_visible)
-
-        except Exception as e:
-            log_msg(f"Update Loop Error: {e}", "error")
-            self._on_check_failed(str(e))
-
-    def background_loop(self):
-        # Initial forced check at startup. Running it here instead of in a
-        # separate thread avoids racing the interval check below.
-        self.check_and_update(force=True)
-        while self.running:
-            try:
-                if self.check_interval > 0 and time.time() >= self._next_check_at:
-                    self.check_and_update(force=False)
-
-                # Auto-check updates once every 24 hours.
-                if (time.time() - self.last_update_check) > 86400:
-                    self.check_for_updates(manual=False)
-                time.sleep(5)
-            except Exception:
-                time.sleep(60)
 
     # --- MENU WITH CUSTOM OPTION RESTORED ---
     def create_menu(self):
@@ -1343,7 +763,7 @@ try {
         latest_frame.grid_columnconfigure(5, weight=0)
         latest_frame.grid_rowconfigure(1, weight=0)
 
-        images = core.sort_images_newest_first(IMAGE_DIR.glob("bing_*.jpg"), os.path.getmtime)
+        images = self.list_images_newest_first()
         gallery_offset = {"value": 0}
         thumb_slots = []
 
@@ -1607,33 +1027,6 @@ try {
         win.after(20, schedule_thumb_redraw)
         win.after(20, apply_adaptive_layout)
 
-    def create_thumbnail(self, parent, img_path):
-        try:
-            pil_img = Image.open(img_path)
-            pil_img.thumbnail((150, 100))
-            tk_img = ImageTk.PhotoImage(pil_img)
-            
-            f = tk.Frame(parent, bd=2, relief="groove")
-            f.pack(side=tk.LEFT, padx=5)
-            
-            lbl = tk.Label(f, image=tk_img, cursor="hand2")
-            lbl.image = tk_img
-            lbl.pack()
-            
-            lbl.bind("<Button-1>", lambda e, p=img_path: self.set_wallpaper(p))
-            
-            # Extract '20260408' from 'bing_20260408.jpg'
-            date_str = img_path.stem.split('_')[-1] 
-            try:
-                # Convert 'YYYYMMDD' to 'Apr 08, 2026'
-                parsed_date = datetime.datetime.strptime(date_str, "%Y%m%d")
-                display_name = parsed_date.strftime("%b %d, %Y")
-            except ValueError:
-                display_name = img_path.stem
-
-            tk.Label(f, text=display_name, font=("Consolas", 8)).pack()
-            
-        except Exception: pass
 
     def run(self):
         t = threading.Thread(target=self.background_loop, daemon=True)

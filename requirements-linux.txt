@@ -1,0 +1,7 @@
+# requirements-linux.txt - the Linux (PySide6) app from a plain checkout:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-linux.txt
+#   .venv/bin/python bing_qt_app.py
+requests==2.34.2
+Pillow==12.1.0
+jeepney==0.9.0
+PySide6-Essentials==6.11.3
