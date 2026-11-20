@@ -45,6 +45,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.4.1" date="2026-11-20">
+      <description>
+        <p>KDE lock screen image now works from the Flatpak; in-app updates install the release bundle through the host.</p>
+      </description>
+    </release>
     <release version="1.4.0" date="2026-11-19">
       <description>
         <p>First Linux release: KDE Plasma and GNOME wallpaper and lock screen, system proxy support, Flatpak packaging.</p>
