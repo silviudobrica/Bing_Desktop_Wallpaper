@@ -42,7 +42,7 @@ from platform_linux import APP_DISPLAY_NAME, APP_ID, LinuxPlatform, linux_paths
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.4.1"
+    VERSION = "1.4.2"
 
 # Name of the launcher script the Flatpak manifest installs into /app/bin.
 LAUNCHER_NAME = "bing-wallpaper"
@@ -824,10 +824,14 @@ class BingQtApp(QObject):
         self._pending_update = None
 
     def on_notification(self, title, message):
-        if self.tray and self.tray.notify(title, message):
+        # In Flatpak the tray's showMessage() talks to org.freedesktop.Notifications,
+        # which the sandbox cannot reach: the call "succeeds" and nothing shows.
+        # Only the Notification portal works there, so the tray is not used.
+        if not self.platform.in_flatpak and self.tray and self.tray.notify(title, message):
             return
         try:
-            self.platform.notify(title, message)
+            if self.platform.notify(title, message) is False:
+                log_msg(f"Notification not delivered: {title}: {message}", "warning")
         except Exception as e:
             log_msg(f"Notification failed: {e}", "error")
 

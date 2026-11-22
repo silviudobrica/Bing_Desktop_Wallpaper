@@ -45,6 +45,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.4.2" date="2026-11-22">
+      <description>
+        <p>Notifications now show in the Flatpak: they go through the Notification portal instead of the tray icon.</p>
+      </description>
+    </release>
     <release version="1.4.1" date="2026-11-20">
       <description>
         <p>KDE lock screen image now works from the Flatpak; in-app updates install the release bundle through the host.</p>
