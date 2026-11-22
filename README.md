@@ -1,6 +1,6 @@
 # Bing Daily Wallpaper
 
-A lightweight Windows system tray application that automatically sets your desktop background to the daily Bing image.
+A lightweight system tray application that automatically sets your desktop background to the daily Bing image. It runs on Windows (installer) and on Linux (Flatpak, KDE Plasma first; see [Linux](#linux-kde-plasma-gnome-as-a-flatpak)).
 
 ## Features
 - **Daily Updates**: Automatically checks for and downloads the latest Bing wallpaper (default: every 12 hours).
@@ -16,6 +16,7 @@ A lightweight Windows system tray application that automatically sets your deskt
 - **Retention**: Optionally delete wallpapers older than N days to keep the Pictures folder small.
 - **Region**: Choose the Bing market (en-US, de-DE, fr-FR, ...) for the daily image.
 - **Resilient Checks**: After a failed check the app retries with increasing backoff (2 min to 1 h) and stays quiet for the first few failures, so a slow network at login no longer produces error pop-ups.
+- **Verified Updates**: Downloaded installers are checked against the SHA-256 digest GitHub publishes for the release asset before they run.
 - **Windows Polish**: High-DPI awareness, keyboard shortcuts, and executable version metadata.
 - **Smart Logging**: Auto-rotating logs keep your system clean.
 
@@ -27,7 +28,8 @@ The same app, with the same window, settings and tray menu, is available for Lin
 - **Lock screen**: KDE through `kscreenlockerrc`; GNOME through gsettings or the portal.
 - **Proxies**: the system proxy is looked up before every request through the XDG ProxyResolver portal, then KDE's `kioslaverc`, GNOME's gsettings and the environment, so a changed proxy is used by the very next download. An explicit proxy in Settings still wins.
 - **Autostart**: the XDG Background portal (Settings > Run at Startup).
-- **Updates**: "Check for Updates" (daily in the background, or from the tray) downloads the new `BingWallpaper.flatpak` from the GitHub release, verifies its SHA-256, installs it through the host's `flatpak install` and restarts the app, like the Windows updater. Once the app is on Flathub, Discover / `flatpak update` do the same.
+- **Notifications**: the XDG Notification portal in the Flatpak (wallpaper changed, update available, repeated failures); the tray icon outside it.
+- **Updates**: "Check for Updates" (daily in the background, or from the tray menu or Settings) downloads the new `BingWallpaper.flatpak` from the GitHub release, verifies its SHA-256, installs it through the host's `flatpak install` and restarts the app, like the Windows updater. A per-user install updates without a password; a system-wide install asks for the administrator password. Once the app is on Flathub, Discover / `flatpak update` do the same.
 
 Install the bundle attached to a release (`BingWallpaper.flatpak`), or run from a checkout:
 
@@ -37,25 +39,26 @@ flatpak install --user BingWallpaper.flatpak
 python3 -m venv .venv && .venv/bin/pip install -r requirements-linux.txt && .venv/bin/python bing_qt_app.py
 ```
 
+Install per-user (`--user`) so the app can update itself without a password. To install a bundle over a copy that is already installed, add `--reinstall`; Flatpak otherwise refuses with "already installed". Settings and downloaded wallpapers are kept across updates and reinstalls.
+
 See [WALKTHROUGH.md](WALKTHROUGH.md#linux-flatpak) for details and the manifest in `flatpak/`.
-- **Verified Updates**: Downloaded installers are checked against the SHA-256 digest GitHub publishes for the release asset before they run.
 
 ## Keyboard Shortcuts
 - **Esc**: Hide/close active app window.
 - **Ctrl+R** or **F5**: Trigger immediate wallpaper check.
 - **Ctrl+,**: Open Settings.
 
-## Update Flow
+## Update Flow (Windows)
 1. Run **Check for Updates** from tray menu or Settings.
 2. If a newer version exists, choose **Download and install now**.
 3. The app downloads the latest installer to `%TEMP%\BingWallpaper\updates`, launches it, and closes itself.
 4. Complete upgrade in the installer UI.
 
 ## Requirements
-* **End Users:** Windows 10 or 11 (No other software required).
+* **End Users:** Windows 10 or 11 (No other software required), or Linux with Flatpak and the Flathub remote (for the KDE runtime).
 * **Developers:** Python 3.10+ (Only if running from source or building the installer). Install tooling with `pip install -r requirements-dev.txt`; unit tests run with `python -m pytest`. CI on GitHub Actions runs the checks and builds the installer.
 
-## Quick Start
+## Quick Start (Windows)
 1. Download the latest installer (`InstallBingWallpaper.exe`).
 2. Run it and click **Install**.
 3. The app will launch automatically and appear in your system tray.
