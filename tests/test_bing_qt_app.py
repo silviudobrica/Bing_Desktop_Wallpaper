@@ -374,6 +374,38 @@ def test_notification_falls_back_to_platform_without_tray(env):
     controller.window.close()
 
 
+class FakeTray:
+    def __init__(self):
+        self.messages = []
+
+    def notify(self, title, message):
+        self.messages.append((title, message))
+        return True
+
+
+def test_notification_in_flatpak_uses_portal_not_tray(env):
+    # The sandbox cannot reach org.freedesktop.Notifications, which is what
+    # the tray's showMessage() uses; it would be dropped silently.
+    controller = qt_app.BingQtApp(env.app, env.service, env.platform, env.paths)
+    controller.tray = FakeTray()
+    controller.on_notification("Bing Wallpaper", "hello")
+    assert env.platform.notifications == [("Bing Wallpaper", "hello")]
+    assert controller.tray.messages == []
+    controller.tray = None
+    controller.window.close()
+
+
+def test_notification_outside_flatpak_prefers_tray(env):
+    controller = qt_app.BingQtApp(env.app, env.service, env.platform, env.paths)
+    env.platform.in_flatpak = False
+    controller.tray = FakeTray()
+    controller.on_notification("Bing Wallpaper", "hello")
+    assert controller.tray.messages == [("Bing Wallpaper", "hello")]
+    assert env.platform.notifications == []
+    controller.tray = None
+    controller.window.close()
+
+
 def test_launch_command_and_display_date():
     assert qt_app.launch_command(True) == ["bing-wallpaper", "--hidden"]
     assert qt_app.launch_command(False)[-1] == "--hidden"

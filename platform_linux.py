@@ -423,14 +423,18 @@ class LinuxPlatform(Platform):
 
     # ------------------------------------------------------------ notify
     def notify(self, title, message):
+        """Show a desktop notification; True when it was handed over.
+        Priority is "normal": Plasma shows no popup for "low" by default."""
         try:
             self.dbus.call(PORTAL_BUS, PORTAL_PATH, "org.freedesktop.portal.Notification", "AddNotification", "sa{sv}",
-                           ("bing-wallpaper", {"title": ("s", title), "body": ("s", message), "priority": ("s", "low")}), timeout=5)
-            return
-        except Exception:
-            pass
+                           ("bing-wallpaper", {"title": ("s", title), "body": ("s", message), "priority": ("s", "normal")}), timeout=5)
+            return True
+        except Exception as e:
+            log_msg(f"Notification portal failed: {e}", "warning")
         if shutil.which("notify-send"):
-            subprocess.run(["notify-send", "--app-name", APP_DISPLAY_NAME, title, message], timeout=10)
+            done = subprocess.run(["notify-send", "--app-name", APP_DISPLAY_NAME, title, message], timeout=10)
+            return done.returncode == 0
+        return False
 
     # ------------------------------------------------------------ autostart
     def autostart_file(self):

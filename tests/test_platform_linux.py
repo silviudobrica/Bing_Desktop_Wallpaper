@@ -311,3 +311,21 @@ def test_install_update_bundle_runs_flatpak_on_the_host(tmp_path, monkeypatch):
     ok, detail = p.install_update_bundle(tmp_path / "b.flatpak", runner=lambda c, t: (1, "error: no remote\n"))
     assert ok is False and "no remote" in detail
     assert make_platform(tmp_path, flatpak=False).supports_self_update is False
+
+
+# ---------------------------------------------------------------- notifications
+def test_notify_uses_portal_with_normal_priority(tmp_path):
+    dbus = FakeDBus()
+    p = make_platform(tmp_path, dbus=dbus)
+    assert p.notify("Bing Wallpaper", "Wallpaper updated") is True
+    interface, method, args = dbus.calls[-1]
+    assert (interface, method) == ("org.freedesktop.portal.Notification", "AddNotification")
+    # Plasma shows no popup for low-priority notifications by default.
+    assert args[1] == {"title": ("s", "Bing Wallpaper"), "body": ("s", "Wallpaper updated"),
+                       "priority": ("s", "normal")}
+
+
+def test_notify_reports_failure_without_portal_or_notify_send(tmp_path, monkeypatch):
+    monkeypatch.setattr(pl.shutil, "which", lambda name: None)
+    p = make_platform(tmp_path, dbus=FakeDBus(fail=True))
+    assert p.notify("Bing Wallpaper", "hello") is False
