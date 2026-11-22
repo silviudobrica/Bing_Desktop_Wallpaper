@@ -18,7 +18,7 @@ import bing_core as core
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.4.5"
+    VERSION = "1.4.6"
 
 APP_NAME = "BingWallpaper"
 PUBLISHER = "Silviu Dobrica"
