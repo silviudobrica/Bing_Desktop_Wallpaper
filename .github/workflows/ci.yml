@@ -123,8 +123,8 @@ jobs:
 
   release:
     name: Publish GitHub release
-    # Only for version tags, e.g. v1.4.4. Pushing the tag is the one manual step:
-    #   git tag v1.4.4 && git push origin v1.4.4
+    # Only for version tags, e.g. v1.4.5. Pushing the tag is the one manual step:
+    #   git tag v1.4.5 && git push origin v1.4.5
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build, flatpak]
     runs-on: ubuntu-latest

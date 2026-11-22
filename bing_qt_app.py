@@ -42,7 +42,7 @@ from platform_linux import APP_DISPLAY_NAME, APP_ID, LinuxPlatform, linux_paths
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.4.4"
+    VERSION = "1.4.5"
 
 # Name of the launcher script the Flatpak manifest installs into /app/bin.
 LAUNCHER_NAME = "bing-wallpaper"
