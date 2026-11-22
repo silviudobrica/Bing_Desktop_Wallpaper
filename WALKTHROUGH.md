@@ -58,15 +58,15 @@ GitHub Actions (`.github/workflows/ci.yml`) runs the compile step, version sync 
 
 Releases are published by CI when a version tag is pushed. The tag must match `_version.py`:
 
-1. Bump `__version__` in `_version.py`, run `python generate_version_info.py`, and write `RELEASE_NOTES_<version>.md`.
+1. Bump `__version__` in `_version.py` and the fallback `VERSION` constants in `bing_daily_wallpaper.py`, `bing_qt_app.py` and `installer.py`, run `python generate_version_info.py`, add a `<release>` entry to `flatpak/io.github.silviudobrica.BingWallpaper.metainfo.xml`, and write `RELEASE_NOTES_<version>.md`.
 2. Commit, then tag and push:
 
    ```powershell
-   git tag v1.4.3
-   git push origin main v1.4.3
+   git tag v1.4.4
+   git push origin main v1.4.4
    ```
 
-3. The `release` job waits for the tests and the build, verifies that the tag matches `_version.py`, creates the GitHub release named `Bing Daily Wallpaper v<version>` with `RELEASE_NOTES_<version>.md` as its body (GitHub-generated notes if the file is missing), and attaches the CI-built `InstallBingWallpaper.exe` and its `.sha256`. Tags containing a `-` (for example `v1.4.0-beta1`) are marked as pre-releases.
+3. The `release` job waits for the tests and the build, verifies that the tag matches `_version.py`, creates the GitHub release named `Bing Daily Wallpaper v<version>` with `RELEASE_NOTES_<version>.md` as its body (GitHub-generated notes if the file is missing), and attaches the CI-built `InstallBingWallpaper.exe` and `BingWallpaper.flatpak`, each with its `.sha256`. Tags containing a `-` (for example `v1.4.0-beta1`) are marked as pre-releases.
 
 The in-app updater picks up the new release from the GitHub API and verifies the download against the digest GitHub computes for the attached asset.
 
@@ -203,7 +203,30 @@ The Linux app (`bing_qt_app.py`, PySide6) is the same application on a different
 *   **Proxy:** before every request the app asks the XDG ProxyResolver portal for the proxy of that URL, then falls back to `~/.config/kioslaverc` (manual, PAC and environment-variable modes), GNOME's `org.gnome.system.proxy`, and finally `http_proxy`/`https_proxy`. Nothing is cached, so changing the system proxy takes effect immediately. The Settings proxy fields override all of this.
 *   **Startup:** Settings > Run at Startup asks the Background portal for autostart (`bing-wallpaper --hidden`); outside Flatpak it writes `~/.config/autostart/io.github.silviudobrica.BingWallpaper.desktop`.
 *   **Tray:** StatusNotifier, shown by Plasma out of the box. On GNOME without a tray extension the window stays visible and closing it quits the app.
-*   **Updates:** "Check for Updates" compares with the latest GitHub release. In the Flatpak it then offers to download the release's `BingWallpaper.flatpak`, verifies it against the SHA-256 GitHub publishes for the asset, installs it with `flatpak install --user` (or `--system`, matching where the app is installed) through the host, and restarts. This needs the `org.freedesktop.Flatpak` permission in the manifest, which a Flathub submission would drop in favour of store updates. Running from a plain checkout, the dialog opens the release page instead. The bundle is downloaded to the app's data directory under `updates/` and deleted after a successful install.
+*   **Notifications:** in the Flatpak they go through the XDG Notification portal with normal priority; the sandbox cannot reach `org.freedesktop.Notifications`, which is what the tray icon would use. Outside Flatpak the tray icon shows them, with the portal and `notify-send` as fallbacks. A notification that cannot be delivered is written to the log.
+*   **Updates:** "Check for Updates" (tray menu or Settings, and once a day in the background) compares with the latest GitHub release. In the Flatpak it then offers to download the release's `BingWallpaper.flatpak`, verifies it against the SHA-256 GitHub publishes for the asset, installs it with `flatpak install --user` (or `--system`, matching where the app is installed) through the host, and restarts. This needs the `org.freedesktop.Flatpak` permission in the manifest, which a Flathub submission would drop in favour of store updates. Running from a plain checkout, the dialog opens the release page instead. The bundle is downloaded to the app's data directory under `updates/` and deleted after a successful install.
+
+### Installing and updating the Flatpak
+
+Download `BingWallpaper.flatpak` from the release page and install it for your user:
+
+```
+flatpak install --user BingWallpaper.flatpak
+```
+
+*   **Per-user or system-wide:** a per-user install (`--user`) lives in your home directory and updates itself without a password; this is the recommended way. A system-wide install (`--system`) needs the administrator password for every update, and the in-app updater shows the desktop's password prompt. The two are separate installs: installing per-user next to a system-wide copy gives two copies, so remove one first.
+*   **Installing over an existing copy:** `flatpak install` refuses a bundle when the app is already installed, even for a newer version. Add `--reinstall` (`flatpak install --user --reinstall BingWallpaper.flatpak`); the in-app updater does this itself.
+*   **Versions 1.4.1 and 1.4.2 on a system-wide install** cannot update themselves ("Flatpak system operation InstallBundle not allowed for user"). Install 1.4.3 or later by hand once with `flatpak install --system --reinstall BingWallpaper.flatpak`, or switch to a per-user install as below.
+*   **Switching from system-wide to per-user:** quit the app from the tray menu first (Exit), then `flatpak uninstall --system io.github.silviudobrica.BingWallpaper` and `flatpak install --user BingWallpaper.flatpak`. The KDE runtime that is already installed system-wide is reused.
+*   **Settings are kept:** updates, reinstalls and a plain uninstall leave `~/.var/app/io.github.silviudobrica.BingWallpaper/` and `~/Pictures/Bing` alone. Only `flatpak uninstall --delete-data` removes the settings.
+
+### Linux troubleshooting
+
+*   **No notifications:** update to 1.4.2 or later, and check that notifications for Bing Wallpaper are not disabled in the desktop's notification settings.
+*   **"Error uninstalling: Directory not empty":** the app was still running during the uninstall. Stop it with `flatpak kill io.github.silviudobrica.BingWallpaper`, then remove what is left: `sudo rm -rf /var/lib/flatpak/app/io.github.silviudobrica.BingWallpaper`, `sudo rm -f /var/lib/flatpak/exports/share/applications/io.github.silviudobrica.BingWallpaper.desktop` and `sudo flatpak repair --system`.
+*   **Logs:** the main window's Open Logs button, or `~/.var/app/io.github.silviudobrica.BingWallpaper/data/bing-wallpaper/logs/bing_wallpaper.log`.
+
+### Building the Flatpak
 
 Build locally (needs `flatpak-builder` and the Flathub remote for `org.kde.Sdk//6.11` and `io.qt.PySide.BaseApp//6.11`):
 

@@ -41,7 +41,7 @@ def check_single_instance():
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.4.3"
+    VERSION = "1.4.4"
 
 # Configuration
 # Bing API, retry and retention constants live in bing_core.py.

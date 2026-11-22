@@ -45,6 +45,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.4.4" date="2026-11-22">
+      <description>
+        <p>Documentation: installing and updating the Flatpak (per-user or system-wide), notifications and Linux troubleshooting. No functional changes.</p>
+      </description>
+    </release>
     <release version="1.4.3" date="2026-11-22">
       <description>
         <p>In-app updates now work for system-wide installs (the password prompt is allowed); Settings has a Check for Updates button.</p>
