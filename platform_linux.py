@@ -494,8 +494,14 @@ class LinuxPlatform(Platform):
         """Install a downloaded .flatpak bundle over this app via the host.
         Returns (ok, detail)."""
         runner = runner or self._run_host_command
-        cmd = ["flatpak", "install", f"--{self.flatpak_installation()}", "-y", "--noninteractive",
-               "--reinstall", str(bundle_path)]
+        installation = self.flatpak_installation()
+        cmd = ["flatpak", "install", f"--{installation}", "-y"]
+        if installation != "system":
+            # A system-wide install needs the administrator password, and
+            # --noninteractive forbids the polkit prompt: the install is then
+            # refused ("InstallBundle not allowed for user").
+            cmd.append("--noninteractive")
+        cmd += ["--reinstall", str(bundle_path)]
         code, output = runner(cmd, 900)
         tail = "\n".join(line for line in output.strip().splitlines()[-5:])
         if code == 0:
