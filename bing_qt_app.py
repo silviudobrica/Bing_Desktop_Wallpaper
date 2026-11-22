@@ -42,7 +42,7 @@ from platform_linux import APP_DISPLAY_NAME, APP_ID, LinuxPlatform, linux_paths
 try:
     from _version import __version__ as VERSION
 except ImportError:
-    VERSION = "1.4.2"
+    VERSION = "1.4.3"
 
 # Name of the launcher script the Flatpak manifest installs into /app/bin.
 LAUNCHER_NAME = "bing-wallpaper"
@@ -307,6 +307,10 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
 
         buttons = QHBoxLayout()
+        updates_btn = QPushButton("Check for Updates")
+        updates_btn.setAutoDefault(False)
+        updates_btn.clicked.connect(self.check_updates)
+        buttons.addWidget(updates_btn)
         buttons.addStretch(1)
         save_btn = QPushButton("Save")
         save_btn.setDefault(True)  # Enter saves
@@ -316,6 +320,9 @@ class SettingsDialog(QDialog):
         buttons.addWidget(save_btn)
         buttons.addWidget(cancel_btn)
         layout.addLayout(buttons)
+
+    def check_updates(self):
+        threading.Thread(target=self.service.check_for_updates, args=(True,), daemon=True).start()
 
     @staticmethod
     def _separator():
@@ -835,15 +842,20 @@ class BingQtApp(QObject):
         except Exception as e:
             log_msg(f"Notification failed: {e}", "error")
 
+    def _dialog_parent(self):
+        """The Settings dialog when the check was started from it, so the
+        answer shows on top of it; the main window otherwise."""
+        return QApplication.activeModalWidget() or self.window
+
     def on_update_result(self, info, manual):
         if not manual:
             return
         if not info:
-            QMessageBox.warning(self.window, "Update Check", "Unable to fetch release information.")
+            QMessageBox.warning(self._dialog_parent(), "Update Check", "Unable to fetch release information.")
             return
         version = info["version"]
         if not info.get("newer"):
-            QMessageBox.information(self.window, "Update Check", f"You are up to date (v{VERSION}).")
+            QMessageBox.information(self._dialog_parent(), "Update Check", f"You are up to date (v{VERSION}).")
             return
         can_install = getattr(self.platform, "supports_self_update", False) and bool((info.get("asset") or {}).get("url"))
         if can_install:
@@ -856,7 +868,7 @@ class BingQtApp(QObject):
         else:
             text = (f"A new version (v{version}) is available.\n\n"
                     "Open the release page to download it?")
-        answer = QMessageBox.question(self.window, "Update Available", text,
+        answer = QMessageBox.question(self._dialog_parent(), "Update Available", text,
                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer != QMessageBox.Yes:
             return
@@ -872,7 +884,7 @@ class BingQtApp(QObject):
         info = self._pending_update or {}
         self._pending_update = None
         if ok:
-            QMessageBox.information(self.window, "Update",
+            QMessageBox.information(self._dialog_parent(), "Update",
                                     f"Update v{info.get('version', '')} installed. The app will now restart.")
             try:
                 self.platform.restart_app()
@@ -881,7 +893,7 @@ class BingQtApp(QObject):
             self.service.stop()
             self.app.quit()
             return
-        answer = QMessageBox.critical(self.window, "Update",
+        answer = QMessageBox.critical(self._dialog_parent(), "Update",
                                       f"The update could not be installed:\n{detail}\n\nOpen the release page instead?",
                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer == QMessageBox.Yes and info.get("html_url"):

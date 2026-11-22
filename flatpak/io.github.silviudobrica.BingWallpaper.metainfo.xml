@@ -45,6 +45,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.4.3" date="2026-11-22">
+      <description>
+        <p>In-app updates now work for system-wide installs (the password prompt is allowed); Settings has a Check for Updates button.</p>
+      </description>
+    </release>
     <release version="1.4.2" date="2026-11-22">
       <description>
         <p>Notifications now show in the Flatpak: they go through the Notification portal instead of the tray icon.</p>

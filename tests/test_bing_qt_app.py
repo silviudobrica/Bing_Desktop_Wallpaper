@@ -255,6 +255,20 @@ def test_settings_dialog_round_trips_config(env):
     assert third.custom_interval.text() == "90"
 
 
+def test_settings_dialog_has_check_for_updates(env, monkeypatch):
+    checks = []
+    monkeypatch.setattr(env.service, "check_for_updates", lambda manual=False: checks.append(manual))
+    dialog = qt_app.SettingsDialog(env.service)
+    button = next(b for b in dialog.findChildren(qt_app.QPushButton) if b.text() == "Check for Updates")
+    button.click()
+    for _ in range(50):
+        if checks:
+            break
+        time.sleep(0.02)
+    assert checks == [True]
+    assert not button.isDefault()  # Enter still saves
+
+
 def test_settings_dialog_rejects_bad_input(env, monkeypatch):
     errors = []
     monkeypatch.setattr(qt_app.QMessageBox, "critical", lambda *a: errors.append(a[2]))
