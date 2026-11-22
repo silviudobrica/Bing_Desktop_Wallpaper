@@ -313,14 +313,17 @@ def test_install_update_bundle_runs_flatpak_on_the_host(tmp_path, monkeypatch):
     assert make_platform(tmp_path, flatpak=False).supports_self_update is False
 
 
-def test_install_update_bundle_system_wide_lets_polkit_ask(tmp_path, monkeypatch):
-    # --noninteractive forbids the password prompt a system install needs;
-    # flatpak then fails with "InstallBundle not allowed for user".
+def test_install_update_bundle_system_wide_asks_through_pkexec(tmp_path, monkeypatch):
+    # Without a terminal flatpak never lets polkit ask for the password and
+    # fails with "InstallBundle not allowed for user"; pkexec asks instead.
     p = make_platform(tmp_path, flatpak=True)
     monkeypatch.setattr(p, "flatpak_installation", lambda: "system")
     calls = []
-    p.install_update_bundle(tmp_path / "b.flatpak", runner=lambda c, t: (calls.append(c), (0, "ok"))[1])
-    assert calls[0] == ["flatpak", "install", "--system", "-y", "--reinstall", str(tmp_path / "b.flatpak")]
+    ok, _ = p.install_update_bundle(tmp_path / "b.flatpak", runner=lambda c, t: (calls.append(c), (0, "ok"))[1])
+    assert ok and calls[0] == ["pkexec", "flatpak", "install", "--system", "-y", "--noninteractive", "--reinstall",
+                               str(tmp_path / "b.flatpak")]
+    ok, detail = p.install_update_bundle(tmp_path / "b.flatpak", runner=lambda c, t: (126, "Error executing command as another user: Request dismissed\n"))
+    assert ok is False and detail == "The password prompt was cancelled."
 
 
 # ---------------------------------------------------------------- notifications

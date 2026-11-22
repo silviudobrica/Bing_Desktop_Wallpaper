@@ -495,17 +495,19 @@ class LinuxPlatform(Platform):
         Returns (ok, detail)."""
         runner = runner or self._run_host_command
         installation = self.flatpak_installation()
-        cmd = ["flatpak", "install", f"--{installation}", "-y"]
-        if installation != "system":
-            # A system-wide install needs the administrator password, and
-            # --noninteractive forbids the polkit prompt: the install is then
-            # refused ("InstallBundle not allowed for user").
-            cmd.append("--noninteractive")
-        cmd += ["--reinstall", str(bundle_path)]
+        cmd = ["flatpak", "install", f"--{installation}", "-y", "--noninteractive", "--reinstall", str(bundle_path)]
+        if installation == "system":
+            # A system-wide install needs the administrator password. Started
+            # without a terminal, flatpak never lets polkit ask for it and
+            # fails with "InstallBundle not allowed for user" (with or without
+            # --noninteractive), so pkexec asks and runs flatpak as root.
+            cmd = ["pkexec"] + cmd
         code, output = runner(cmd, 900)
         tail = "\n".join(line for line in output.strip().splitlines()[-5:])
         if code == 0:
             return True, tail or "installed"
+        if installation == "system" and code == 126:
+            return False, "The password prompt was cancelled."
         return False, tail or f"flatpak install exited with {code}"
 
     def _run_host_command(self, cmd, timeout):
