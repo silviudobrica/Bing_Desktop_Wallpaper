@@ -45,6 +45,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.4.6" date="2026-11-22">
+      <description>
+        <p>Maintenance release with no functional changes.</p>
+      </description>
+    </release>
     <release version="1.4.5" date="2026-11-22">
       <description>
         <p>In-app updates of a system-wide install now ask for the administrator password through pkexec instead of failing.</p>
